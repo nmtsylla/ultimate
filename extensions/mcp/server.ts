@@ -27,7 +27,13 @@ import { readSecret } from '../../lib/secrets.ts'
 import { readSettings, userSettingsPath } from '../../lib/settings.ts'
 import type { ExtensionAction } from '../../server/actions.ts'
 import type { ExtensionHost } from '../../server/extensions.ts'
-import { ReconnectAction, LoginAction, LogoutAction, StatusAction } from './refs.ts'
+import {
+  ReconnectAction,
+  CompleteLoginAction,
+  LoginAction,
+  LogoutAction,
+  StatusAction,
+} from './refs.ts'
 import type { McpServerStatus } from './refs.ts'
 import { beginLogin, forgetCredentials, oauthProvider, storedCredentials } from './oauth.ts'
 import type { LoginFlow } from './oauth.ts'
@@ -56,7 +62,12 @@ type Server = Omit<McpServerStatus, 'tools'> & {
   /** The secret values its config resolved, kept out of every error it shows. */
   secrets: string[]
   /** The browser sign-in waiting for its redirect, while the user finishes it in the browser. */
-  login?: { url: string; close(): Promise<void> }
+  login?: {
+    url: string
+    /** Completes it from the address bar of the page the browser failed to load, on another machine. */
+    complete(pasted: string): Promise<void>
+    close(): Promise<void>
+  }
 }
 
 const isObject = (value: unknown): value is Record<string, unknown> =>
@@ -199,6 +210,7 @@ const views = new WeakMap<
     status(): McpServerStatus[]
     reconnect(name: string): Promise<void>
     login(name: string): Promise<void>
+    completeLogin(name: string, pasted: string): Promise<void>
     logout(name: string): Promise<void>
   }
 >()
@@ -217,6 +229,15 @@ export const actions: Record<string, ExtensionAction> = {
     const name = isObject(args) ? args.name : undefined
     if (!view || typeof name !== 'string') throw new Error('login: name is required')
     await view.login(name)
+    return view.status()
+  }),
+  completeLogin: implementAction(CompleteLoginAction, async (args, { host }) => {
+    const view = views.get(host)
+    const name = isObject(args) ? args.name : undefined
+    const pasted = isObject(args) ? args.url : undefined
+    if (!view || typeof name !== 'string' || typeof pasted !== 'string')
+      throw new Error('completeLogin: name and url are required')
+    await view.completeLogin(name, pasted)
     return view.status()
   }),
   logout: implementAction(LogoutAction, async (args, { host }) => {
@@ -453,8 +474,8 @@ export default async function mcp(host: ExtensionHost) {
       await flow.close()
       return 'failed'
     }
-    if (!flow.url) return 'authorized'
-    const login = { url: flow.url, close: () => flow.close() }
+    if (!flow.url || !flow.complete) return 'authorized'
+    const login = { url: flow.url, complete: flow.complete, close: () => flow.close() }
     server.login = login
     server.state = 'needs-login'
     void flow.authorized.then(
@@ -508,6 +529,23 @@ export default async function mcp(host: ExtensionHost) {
       })
       // Stored credentials still refreshed, so nothing went to the browser: connect with the token they left.
       if (signedIn.outcome === 'authorized') await restart(server)
+    },
+    async completeLogin(name, pasted) {
+      const server = servers.get(name)
+      if (!server) throw new Error(`No MCP server named ${name}`)
+      const login = server.login
+      if (!login)
+        throw new Error(
+          `No sign-in is waiting for ${name}: press Connect, finish in the browser, then paste its address`,
+        )
+      try {
+        await login.complete(pasted)
+      } catch (error) {
+        // The flow's own failure is worded already; only a server's secrets are masked from what it says.
+        throw new Error(redact(server, error), { cause: error })
+      }
+      // The sign-in's own restart follows the same promise: waiting for it brings the row back connected.
+      await server.connecting
     },
     async logout(name) {
       const server = servers.get(name)

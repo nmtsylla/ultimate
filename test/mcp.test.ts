@@ -190,6 +190,7 @@ async function serveOAuth() {
   let authorized = 0
   let refreshed = 0
   let refuseRefresh = false
+  let refuseCodes = false
   let port = 0
   const base = () => `http://127.0.0.1:${port}`
   const json = (response: ServerResponse, status: number, value: unknown) =>
@@ -275,7 +276,7 @@ async function serveOAuth() {
           refreshed++
         }
         if (grant === 'authorization_code') {
-          const stored = codes.get(form.get('code') ?? '')
+          const stored = refuseCodes ? undefined : codes.get(form.get('code') ?? '')
           if (stored) codes.delete(form.get('code')!)
           const verifier = form.get('code_verifier') ?? ''
           const digest = createHash('sha256').update(verifier).digest('base64url')
@@ -316,6 +317,10 @@ async function serveOAuth() {
     url: `${base()}/mcp`,
     /** Makes the MCP endpoint refuse every token issued so far, as an expired access token does. */
     expire: () => accepted.clear(),
+    /** Makes the token endpoint refuse every authorization code, as one already used or timed out. */
+    expireCodes: () => {
+      refuseCodes = true
+    },
     refuseRefresh: () => {
       refuseRefresh = true
     },
@@ -404,6 +409,105 @@ it('signs in over the loopback callback, stores the token and signs out again', 
   expect(signedOut).toMatchObject({ name: 'atlassian', state: 'needs-login' })
   expect(signedOut.signedIn).toBeUndefined()
   expect(JSON.parse(await readFile(file, 'utf8'))).toMatchObject({ serverUrl: oauth.url })
+})
+
+/** A host whose `atlassian` server is waiting for its browser sign-in, and the page to open. */
+async function waitingSignIn(root: string, oauth: Awaited<ReturnType<typeof serveOAuth>>) {
+  const run = serverHost(root, { atlassian: { type: 'http', url: oauth.url } })
+  cleanup.push(run.close)
+  await run.write()
+  await mcp(run.host)
+  await until(() => run.status()[0]?.state === 'needs-login')
+  const [started] = (await actions.login({ name: 'atlassian' }, {
+    host: run.host,
+  } as never)) as unknown as McpServerStatus[]
+  if (!started.loginUrl) throw new Error('the sign-in returned no page to open')
+  return { run, loginUrl: started.loginUrl }
+}
+
+/**
+ * The address the browser lands on after approving, captured instead of followed: a browser on another machine cannot
+ * load it, so the user copies it from the address bar into the popover.
+ */
+async function redirectAddress(loginUrl: string) {
+  const page = await fetch(loginUrl, { redirect: 'manual' })
+  const location = page.headers.get('location')
+  if (!location) throw new Error('the authorization server did not redirect the browser')
+  return location
+}
+
+it('completes a sign-in from the pasted redirect address of a browser on another machine', async () => {
+  const root = await temp()
+  cleanup.push(() => removeTemp(root))
+  const oauth = await serveOAuth()
+  const { run, loginUrl } = await waitingSignIn(root, oauth)
+  const address = await redirectAddress(loginUrl)
+
+  const [connected] = (await actions.completeLogin({ name: 'atlassian', url: address }, {
+    host: run.host,
+  } as never)) as unknown as McpServerStatus[]
+  await until(() => run.status()[0]?.state === 'connected')
+  expect(run.status()[0]).toMatchObject({ state: 'connected', tools: 1, signedIn: true })
+  expect(connected.loginUrl).toBeUndefined()
+
+  // The pasted path stores the grant exactly where the loopback path does: owner-only, one file per server URL.
+  const file = oauthStatePath(root, oauth.url)
+  expect((await stat(file)).mode & 0o777).toBe(0o600)
+  expect(JSON.parse(await readFile(file, 'utf8'))).toMatchObject({
+    serverUrl: oauth.url,
+    clientInformation: { client_id: 'ultimate-test' },
+    tokens: { access_token: expect.any(String), refresh_token: 'refresh-1' },
+  })
+})
+
+it('accepts the bare authorization code with no address around it', async () => {
+  const root = await temp()
+  cleanup.push(() => removeTemp(root))
+  const oauth = await serveOAuth()
+  const { run, loginUrl } = await waitingSignIn(root, oauth)
+  const code = new URL(await redirectAddress(loginUrl)).searchParams.get('code')!
+
+  await actions.completeLogin({ name: 'atlassian', url: code }, { host: run.host } as never)
+  await until(() => run.status()[0]?.state === 'connected')
+  expect(run.status()[0]).toMatchObject({ state: 'connected', tools: 1, signedIn: true })
+})
+
+it('rejects a pasted address from another sign-in and keeps the waiting one', async () => {
+  const root = await temp()
+  cleanup.push(() => removeTemp(root))
+  const oauth = await serveOAuth()
+  const { run, loginUrl } = await waitingSignIn(root, oauth)
+  const address = new URL(await redirectAddress(loginUrl))
+  address.searchParams.set('state', 'not-the-state-of-this-sign-in')
+
+  await expect(
+    actions.completeLogin({ name: 'atlassian', url: address.href }, {
+      host: run.host,
+    } as never),
+  ).rejects.toThrow(/belongs to another sign-in/)
+  // Still waiting, with the same page: the user pastes the right address instead of pressing Connect again.
+  expect(run.status()[0]).toMatchObject({ state: 'needs-login', loginUrl })
+})
+
+it('reports an authorization code that expired or was already used', async () => {
+  const root = await temp()
+  cleanup.push(() => removeTemp(root))
+  const oauth = await serveOAuth()
+  const { run, loginUrl } = await waitingSignIn(root, oauth)
+  const address = await redirectAddress(loginUrl)
+  oauth.expireCodes()
+
+  await expect(
+    actions.completeLogin({ name: 'atlassian', url: address }, { host: run.host } as never),
+  ).rejects.toThrow(/PKCE failed/)
+  await until(() => run.status()[0]?.state === 'needs-login')
+  // The row says why and waits for a Connect instead of a silent no-op or a retry into the same 401.
+  expect(run.status()[0]).toMatchObject({
+    state: 'needs-login',
+    error: 'Sign-in failed: PKCE failed',
+  })
+  expect(run.status()[0].loginUrl).toBeUndefined()
+  expect(run.status()[0].retryAt).toBeUndefined()
 })
 
 it('connects from stored credentials on the next start, without the browser', async () => {

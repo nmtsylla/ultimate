@@ -15,7 +15,13 @@ import {
   useNow,
 } from '@/sdk'
 import { ExtensionDetails } from '../onboarding/ui.tsx'
-import { LoginAction, LogoutAction, ReconnectAction, StatusAction } from './refs.ts'
+import {
+  CompleteLoginAction,
+  LoginAction,
+  LogoutAction,
+  ReconnectAction,
+  StatusAction,
+} from './refs.ts'
 import type { McpServerStatus } from './refs.ts'
 
 /**
@@ -66,6 +72,7 @@ const smallButton =
 function Row({ server, onChanged }: { server: McpServerStatus; onChanged: () => void }) {
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState<string>()
+  const [pasted, setPasted] = useState('')
   const now = useNow(1_000, server.retryAt !== undefined)
   const run = async (work: () => Promise<unknown>) => {
     setBusy(true)
@@ -87,6 +94,13 @@ function Row({ server, onChanged }: { server: McpServerStatus; onChanged: () => 
       // The click's activation survives the local round trip in most browsers, so the sign-in page opens from here;
       // the row's link covers one that blocks it.
       if (url) window.open(url, '_blank', 'noreferrer')
+    })
+  /** Completes the waiting sign-in from the address bar of the page a remote browser could not load. */
+  const finish = () =>
+    run(async () => {
+      // A failure keeps the pasted address in the field, so a typo can be corrected.
+      await api.action(CompleteLoginAction, { name: server.name, url: pasted.trim() })
+      setPasted('')
     })
   const logout = () => run(() => api.action(LogoutAction, { name: server.name }))
   // Its missing secret, once saved in the Secrets panel, connects it again at once instead of at the next retry.
@@ -167,14 +181,48 @@ function Row({ server, onChanged }: { server: McpServerStatus; onChanged: () => 
         </button>
       )}
       {server.loginUrl && (
-        <a
-          className={cn(smallButton, 'mt-1 ml-3.5 inline-block')}
-          href={server.loginUrl}
-          rel="noreferrer"
-          target="_blank"
-        >
-          Open sign-in page
-        </a>
+        <div className="mt-1 ml-3.5 flex flex-col items-start gap-1">
+          <a
+            className={cn(smallButton, 'inline-block')}
+            href={server.loginUrl}
+            rel="noreferrer"
+            target="_blank"
+          >
+            Open sign-in page
+          </a>
+          <div className="flex w-full items-center gap-1">
+            <input
+              aria-label={`Redirect address for ${server.name}`}
+              autoComplete="off"
+              className="h-6 min-w-0 flex-1 rounded-sm border border-input bg-background px-1.5 font-mono text-[11px] outline-none placeholder:text-muted-foreground/60 focus-visible:border-ring focus-visible:ring-2 focus-visible:ring-ring/40"
+              disabled={busy}
+              onChange={(event) => setPasted(event.target.value)}
+              onKeyDown={(event) => {
+                if (event.nativeEvent.isComposing) return
+                if (event.key === 'Enter') {
+                  event.preventDefault()
+                  // oxlint-disable-next-line typescript/no-floating-promises -- run() reports the failure in the row.
+                  if (pasted.trim()) void finish()
+                }
+              }}
+              placeholder="Paste the redirect address"
+              spellCheck={false}
+              value={pasted}
+            />
+            <button
+              className={smallButton}
+              disabled={busy || !pasted.trim()}
+              onClick={() => void finish()}
+              type="button"
+            >
+              Finish
+            </button>
+          </div>
+          <p className="text-[10.5px] leading-snug text-muted-foreground/70">
+            If the browser cannot reach this machine, copy the whole address bar of the page that
+            failed to load and paste it here.
+          </p>
+        </div>
       )}
     </li>
   )

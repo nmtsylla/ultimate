@@ -10,6 +10,7 @@ import { McpOAuthProvider, OAuthCallbackServer, authorizeMcp } from '@earendil-w
 import type {
   McpOAuthState,
   McpOAuthStateStore,
+  OAuthCallback,
   OAuthCallbackPage,
 } from '@earendil-works/pi-mcp/oauth'
 import { readJson, writeJson } from '../../lib/json-file.ts'
@@ -133,10 +134,55 @@ async function listener(stored: McpOAuthState | undefined) {
 export type LoginFlow = {
   /** The page to open in the browser, when the server needs it; absent when stored tokens still worked. */
   url?: string
+  /**
+   * Completes a waiting sign-in from the address bar of the page the browser failed to load, or from a bare code: the
+   * browser may be on another machine, where the loopback redirect cannot reach this one. Absent without `url`.
+   */
+  complete?: (pasted: string) => Promise<void>
   /** Resolves once tokens are stored; rejects when consent is denied, the callback times out or the exchange fails. */
   authorized: Promise<void>
   /** Stops waiting for the browser. Safe to call twice. */
   close(): Promise<void>
+}
+
+/** The authorization response an address bar or a bare code carries; a bare code has no `state` to check. */
+type AuthorizationResponse = Omit<OAuthCallback, 'state'> & { state?: string }
+
+/**
+ * What a pasted address bar (or a bare authorization code) holds: the `code` the exchange needs, the `state` the
+ * sign-in checks, and the `iss` RFC 9207 validates. A denied consent comes as `error` instead of `code`.
+ */
+function pastedResponse(input: string): AuthorizationResponse {
+  const text = input.trim().replace(/^<|>$/g, '')
+  if (!text)
+    throw new Error('Paste the address of the page that failed to load, or the code it shows')
+  // A browser shows the full address; one copied without its scheme is still the redirect, not a code.
+  const address = /^https?:\/\//i.test(text)
+    ? text
+    : /^[^\s?#]+\?/.test(text)
+      ? `http://${text}`
+      : undefined
+  if (!address) {
+    if (/\s/.test(text))
+      throw new Error(
+        'That is neither a redirect address nor a code: paste the whole address bar of the page that failed to load',
+      )
+    return { code: text }
+  }
+  const url = new URL(address)
+  const error = url.searchParams.get('error')
+  if (error)
+    throw new Error(
+      `The sign-in was not approved: ${url.searchParams.get('error_description') ?? error}`,
+    )
+  const code = url.searchParams.get('code')
+  if (!code)
+    throw new Error(
+      'That address carries no authorization code: copy the address bar of the page that failed to load, after approving',
+    )
+  const state = url.searchParams.get('state')
+  const iss = url.searchParams.get('iss')
+  return { code, ...(state === null ? {} : { state }), ...(iss === null ? {} : { iss }) }
 }
 
 /**
@@ -199,13 +245,37 @@ export async function beginLogin(options: {
     return { authorized: Promise.resolve(), close }
   }
   const state = await provider.state()
+  // The browser's redirect and a pasted address bar carry the same authorization response, and whichever arrives first
+  // runs the one exchange: a code is single-use, so a second exchange would only fail.
+  let exchange: Promise<unknown> | undefined
+  const finish = (callback: { code: string; iss?: string }) =>
+    (exchange ??= step(callback.code, callback.iss))
+  let pasted!: (callback: AuthorizationResponse) => void
+  const paste = new Promise<AuthorizationResponse>((resolve) => (pasted = resolve))
   const authorized = (async () => {
     try {
-      const callback = await server.waitForCallback(state)
-      await step(callback.code, callback.iss)
+      await finish(
+        await Promise.race<AuthorizationResponse>([server.waitForCallback(state), paste]),
+      )
     } finally {
       await close()
     }
   })()
-  return { url: page, authorized, close }
+  const complete = async (input: string) => {
+    const callback = pastedResponse(input)
+    if (callback.state !== undefined && callback.state !== state)
+      throw new Error(
+        'That address belongs to another sign-in: press Connect again and paste the address of the new one',
+      )
+    pasted(callback)
+    // The exchange runs on `authorized`; awaiting it here turns a rejected or reused code into this action's failure,
+    // worded as the flow words it rather than as a malformed paste.
+    try {
+      await authorized
+    } catch (error) {
+      const reason = error instanceof Error ? error.message : String(error)
+      throw new Error(`Sign-in failed: ${reason}`, { cause: error })
+    }
+  }
+  return { url: page, complete, authorized, close }
 }

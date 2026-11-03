@@ -33,5 +33,13 @@ export const ReconnectAction = actionRef<{ name: string }, McpServerStatus[]>('m
  * `loginUrl` while the browser round trip waits, and the server connects once the redirect arrives.
  */
 export const LoginAction = actionRef<{ name: string }, McpServerStatus[]>('mcp', 'login')
+/**
+ * `{ name, url }` → completes the sign-in waiting for `name` from the address bar of the page the browser failed to
+ * load (or a bare code), for a browser on another machine; returns every server's state.
+ */
+export const CompleteLoginAction = actionRef<{ name: string; url: string }, McpServerStatus[]>(
+  'mcp',
+  'completeLogin',
+)
 /** `{ name }` → drops that server's OAuth credentials, disconnects it and returns every server's state. */
 export const LogoutAction = actionRef<{ name: string }, McpServerStatus[]>('mcp', 'logout')
