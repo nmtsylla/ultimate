@@ -148,7 +148,7 @@ settings apply live; nothing needs a restart.
   - Extensions outside the clone import what built-ins import (`@/sdk`, `@/components/…`, clone packages), and nothing type-checks them.
   - Keep the project's own tooling (type check, lint, format) from scanning `.ultimate/`.
   - A worktree's `.ultimate/` does not hot-reload the running host. Preview it with `instance start`: a clean instance (every agent on `instance.model`) that runs the worktree as its project and loads its `.ultimate/extensions`.
-- **Verify against the real project**, not a copy of Ultimate: the preview above, or a temporary `HOME` with the project trusted (`~/.ultimate/trust.json`) and onboarding done, then `node <clone>/bin/ultimate.ts <project> --port <free> --no-open`.
+- **Verify against the real project**, not a copy of Ultimate: the preview above, or a temporary `HOME` with the project trusted (`~/.ultimate/trust.json`) and onboarding done, then `node <clone>/bin/ultimate.ts <project> --foreground --port <free> --no-open`.
   - Check the extension info for load errors.
   - Call the actions.
   - Open the surfaces in a browser and take screenshots.

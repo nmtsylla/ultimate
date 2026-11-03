@@ -56,18 +56,22 @@ else if (args[0] === 'serve') {
       Object.keys(
         (JSON.parse(await readFile(config, 'utf8')) as { serve: { Web?: object } }).serve.Web ?? {},
       )
-    const supervisor = spawn(process.execPath, [join(root, 'bin/ultimate.ts'), root, '--no-open'], {
-      cwd: root,
-      detached: true,
-      env: cleanEnv({
-        HOME: home,
-        ULTIMATE_HOME: join(home, 'state'),
-        ULTIMATE_PORT: '0',
-        ULTIMATE_NO_OPEN: '1',
-        TAILSCALE_COMMAND: cli,
-      }),
-      stdio: ['ignore', 'pipe', 'pipe'],
-    })
+    const supervisor = spawn(
+      process.execPath,
+      [join(root, 'bin/ultimate.ts'), root, '--foreground', '--no-open'],
+      {
+        cwd: root,
+        detached: true,
+        env: cleanEnv({
+          HOME: home,
+          ULTIMATE_HOME: join(home, 'state'),
+          ULTIMATE_PORT: '0',
+          ULTIMATE_NO_OPEN: '1',
+          TAILSCALE_COMMAND: cli,
+        }),
+        stdio: ['ignore', 'pipe', 'pipe'],
+      },
+    )
     let output = ''
     supervisor.stdout.on('data', (chunk) => (output += chunk))
     supervisor.stderr.on('data', (chunk) => (output += chunk))

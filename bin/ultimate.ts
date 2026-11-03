@@ -2,16 +2,25 @@
 import { fork, spawn } from 'node:child_process'
 import type { ChildProcess } from 'node:child_process'
 import { once } from 'node:events'
-import { mkdir, realpath } from 'node:fs/promises'
+import { mkdir, readdir, realpath } from 'node:fs/promises'
 import { parseArgs } from 'node:util'
+import { homedir } from 'node:os'
 import { projectHome } from '../server/project.ts'
-import { acquireLock, readOwner, retireStorageOwner, pause } from '../server/lock.ts'
+import {
+  acquireLock,
+  alive,
+  lockHeld,
+  readOwner,
+  retireStorageOwner,
+  pause,
+} from '../server/lock.ts'
 import { watch, existsSync } from 'node:fs'
 import { watchRoots } from '../server/watch-roots.ts'
 import { join, resolve as resolvePath } from 'node:path'
 import { createServer, connect } from 'node:net'
 import type { Socket } from 'node:net'
 import { fileURLToPath } from 'node:url'
+import { identify } from '../lib/process-group.ts'
 import type { BuildInfo } from '../shared/protocol.ts'
 import type { ChildMessage, SupervisorMessage } from '../server/supervisor-protocol.ts'
 import { loopbackAuthority, proxied } from '../server/request-security.ts'
@@ -21,10 +30,15 @@ import { dashboard } from './dashboard.ts'
 
 const ultimateRoot = resolvePath(fileURLToPath(new URL('..', import.meta.url)))
 const { values, positionals } = parseArgs({
-  options: { port: { type: 'string' }, 'no-open': { type: 'boolean' } },
+  options: {
+    port: { type: 'string' },
+    'no-open': { type: 'boolean' },
+    foreground: { type: 'boolean' },
+  },
   allowPositionals: true,
 })
-if (positionals.length > 1) throw new Error('Usage: ultimate [dir] [--port N] [--no-open]')
+const usage =
+  'Usage: ultimate [dir] [--port N] [--no-open] [--foreground] | ultimate list | ultimate stop [dir]'
 const opening = !values['no-open'] && process.env.ULTIMATE_NO_OPEN !== '1'
 const available = (name: string) =>
   process.env.PATH?.split(':').some((path) => existsSync(join(path, name)))
@@ -60,6 +74,186 @@ function openWindow(port: number) {
   opener.on('error', (error) => console.error(`Cannot open ${tab}: ${error.message}`))
   opener.unref()
 }
+async function printLine(text: string) {
+  const { promise, resolve, reject } = Promise.withResolvers<void>()
+  process.stdout.write(`${text}\n`, (error) => (error ? reject(error) : resolve()))
+  await promise
+}
+/** The remote HTTPS origin a running instance currently serves, read from its own system info. */
+async function remoteUrl(port: number) {
+  const response = await fetch(`http://127.0.0.1:${port}/api/events`, {
+    signal: AbortSignal.timeout(2000),
+  }).catch(() => {
+    // A starting or stopped instance has no reachable system info.
+    return undefined
+  })
+  if (!response?.body) return undefined
+  const reader = response.body.getReader()
+  const decoder = new TextDecoder()
+  let buffer = ''
+  try {
+    for (;;) {
+      const { done, value } = await reader.read()
+      if (done) return undefined
+      buffer += decoder.decode(value, { stream: true })
+      let end: number
+      while ((end = buffer.indexOf('\n\n')) !== -1) {
+        const block = buffer.slice(0, end)
+        buffer = buffer.slice(end + 2)
+        if (!/^event: system$/m.test(block)) continue
+        const data = [...block.matchAll(/^data: (.+)$/gm)].at(-1)?.[1]
+        if (!data) return undefined
+        const system: unknown = JSON.parse(data)
+        if (
+          typeof system !== 'object' ||
+          system === null ||
+          !('access' in system) ||
+          typeof system.access !== 'object' ||
+          system.access === null ||
+          !('origins' in system.access) ||
+          !Array.isArray(system.access.origins)
+        )
+          return undefined
+        return system.access.origins.find(
+          (origin): origin is string => typeof origin === 'string' && origin.startsWith('https://'),
+        )
+      }
+    }
+  } catch {
+    return undefined
+  } finally {
+    // The stream may already be closed by the server; cancelling is best effort.
+    await reader.cancel().catch(() => {})
+  }
+}
+async function runningProjects() {
+  const directory = join(homedir(), '.ultimate', 'projects')
+  const entries = await readdir(directory, { withFileTypes: true }).catch((error: unknown) => {
+    if (error instanceof Error && 'code' in error && error.code === 'ENOENT') return []
+    throw error
+  })
+  const homes = new Set(
+    entries.filter((entry) => entry.isDirectory()).map((entry) => join(directory, entry.name)),
+  )
+  if (process.env.ULTIMATE_HOME) homes.add(resolvePath(process.env.ULTIMATE_HOME))
+  const running = await Promise.all(
+    [...homes].map(async (home) => {
+      const lockPath = join(home, 'ultimate.lock')
+      const owner = await readOwner(lockPath)
+      if (
+        typeof owner?.project !== 'string' ||
+        !owner.project ||
+        typeof owner.port !== 'number' ||
+        !Number.isInteger(owner.port) ||
+        owner.port < 1 ||
+        owner.port > 65535 ||
+        !alive(owner.pid) ||
+        !lockHeld(lockPath)
+      )
+        return undefined
+      return {
+        project: owner.project,
+        url: `http://127.0.0.1:${owner.port}`,
+        remote: await remoteUrl(owner.port),
+      }
+    }),
+  )
+  return running
+    .filter((entry): entry is NonNullable<typeof entry> => entry !== undefined)
+    .toSorted((left, right) => left.project.localeCompare(right.project))
+}
+async function stopProject(projectRoot: string) {
+  const lockPath = join(process.env.ULTIMATE_HOME ?? projectHome(projectRoot), 'ultimate.lock')
+  const owner = await readOwner(lockPath)
+  if (!owner || owner.project !== projectRoot || !alive(owner.pid) || !lockHeld(lockPath)) {
+    await printLine(`Ultimate is not running for ${projectRoot}.`)
+    return
+  }
+  const identity = identify(owner.pid)
+  if (!identity) {
+    if (lockHeld(lockPath)) throw new Error(`Cannot verify Ultimate supervisor pid ${owner.pid}`)
+    await printLine(`Ultimate is not running for ${projectRoot}.`)
+    return
+  }
+  if (identify(owner.pid) !== identity || !lockHeld(lockPath)) {
+    await printLine(`Ultimate is not running for ${projectRoot}.`)
+    return
+  }
+  try {
+    process.kill(owner.pid, 'SIGTERM')
+  } catch (error) {
+    if (!(error instanceof Error && 'code' in error && error.code === 'ESRCH'))
+      throw new Error(`Cannot stop Ultimate supervisor pid ${owner.pid}`, { cause: error })
+  }
+  const deadline = Date.now() + 10000
+  while (Date.now() < deadline) {
+    const current = await readOwner(lockPath)
+    if (!lockHeld(lockPath) || current?.pid !== owner.pid || identify(owner.pid) !== identity) {
+      await printLine(`Stopped Ultimate for ${projectRoot}.`)
+      return
+    }
+    await pause(50)
+  }
+  throw new Error(`Timed out stopping Ultimate for ${projectRoot} (pid ${owner.pid})`)
+}
+async function startBackground(projectRoot: string, home: string) {
+  const lockPath = join(home, 'ultimate.lock')
+  const owner = await readOwner(lockPath)
+  if (owner && lockHeld(lockPath)) {
+    if (owner.project !== projectRoot)
+      throw new Error(
+        `Ultimate state home is already used by ${owner.project ?? `pid ${owner.pid}`}`,
+      )
+    if (!alive(owner.pid)) throw new Error(`Ultimate lock is held by non-running pid ${owner.pid}`)
+    if (opening && owner.port) openWindow(owner.port)
+    await printLine(
+      owner.port
+        ? `Ultimate is already running for ${projectRoot} at http://127.0.0.1:${owner.port}`
+        : `Ultimate is starting for ${projectRoot}. Run \`ultimate list\` to see its URL.`,
+    )
+    return
+  }
+  const args = [fileURLToPath(import.meta.url), projectRoot, '--foreground']
+  if (values.port !== undefined) args.push('--port', values.port)
+  if (!opening) args.push('--no-open')
+  const child = spawn(process.execPath, args, { cwd: projectRoot, detached: true, stdio: 'ignore' })
+  child.unref()
+  await printLine(
+    `Ultimate starting in the background for ${projectRoot}. Run \`ultimate list\` to see its URL.`,
+  )
+}
+
+const command = positionals[0]
+if (command === 'list') {
+  if (
+    positionals.length !== 1 ||
+    values.port !== undefined ||
+    values['no-open'] ||
+    values.foreground
+  )
+    throw new Error(usage)
+  const running = await runningProjects()
+  await printLine(
+    running.length
+      ? `Project\tLocal\tTailscale\n${running
+          .map(({ project, url, remote }) => `${project}\t${url}\t${remote ?? '-'}`)
+          .join('\n')}`
+      : 'No Ultimate projects are running.',
+  )
+  process.exit(0)
+}
+if (command === 'stop') {
+  if (positionals.length > 2 || values.port !== undefined || values['no-open'] || values.foreground)
+    throw new Error(usage)
+  const requested = positionals[1] ?? process.cwd()
+  const projectRoot = await realpath(requested).catch((error) => {
+    console.error(`Cannot open project ${requested}: ${error.code ?? error.message}`)
+    process.exit(1)
+  })
+  await stopProject(projectRoot)
+  process.exit(0)
+}
+if (positionals.length > 1) throw new Error(usage)
 const projectRoot = await realpath(positionals[0] ?? process.cwd()).catch((error) => {
   console.error(
     `Cannot open project ${positionals[0] ?? process.cwd()}: ${error.code ?? error.message}`,
@@ -70,6 +264,10 @@ const home = process.env.ULTIMATE_HOME ?? projectHome(projectRoot)
 const requestedPort = values.port ?? process.env.ULTIMATE_PORT
 let port = Number(requestedPort ?? 4747)
 if (!Number.isInteger(port) || port < 0 || port > 65535) throw new Error('Invalid port')
+if (!values.foreground) {
+  await startBackground(projectRoot, home)
+  process.exit(0)
+}
 const lockPath = join(home, 'ultimate.lock')
 await mkdir(home, { recursive: true })
 const lock = await acquireLock(lockPath, {

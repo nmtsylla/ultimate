@@ -70,7 +70,7 @@ export async function launch(home: string) {
   model ??= await scriptedModel(answer)
   const child = spawn(
     process.execPath,
-    [join(ultimateRoot, 'bin/ultimate.ts'), ultimateRoot, '--no-open'],
+    [join(ultimateRoot, 'bin/ultimate.ts'), ultimateRoot, '--foreground', '--no-open'],
     {
       cwd: ultimateRoot,
       env: {

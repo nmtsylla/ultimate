@@ -1,4 +1,5 @@
 import { readFile, writeFile, unlink, rename } from 'node:fs/promises'
+import { existsSync } from 'node:fs'
 import { DatabaseSync } from 'node:sqlite'
 import { identify } from '../lib/process-group.ts'
 
@@ -9,6 +10,25 @@ export function alive(pid: number) {
     return true
   } catch (error) {
     return (error as NodeJS.ErrnoException).code !== 'ESRCH'
+  }
+}
+/** Whether another process currently holds this lock's SQLite transaction. */
+export function lockHeld(path: string) {
+  const databasePath = `${path}.db`
+  if (!existsSync(databasePath)) return false
+  const database = new DatabaseSync(databasePath)
+  try {
+    database.exec('PRAGMA busy_timeout = 0')
+    try {
+      database.exec('BEGIN EXCLUSIVE')
+      database.exec('ROLLBACK')
+      return false
+    } catch (error) {
+      if (error instanceof Error && 'errcode' in error && error.errcode === 5) return true
+      throw error
+    }
+  } finally {
+    database.close()
   }
 }
 export async function retireStorageOwner(path: string) {

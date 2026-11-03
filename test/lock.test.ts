@@ -2,7 +2,7 @@ import { rm, writeFile } from 'node:fs/promises'
 import { temp, removeTemp } from './helpers.ts'
 import { join } from 'node:path'
 import { afterEach, expect, it, vi } from 'vitest'
-import { acquireLock, readOwner, retireStorageOwner, alive } from '../server/lock.ts'
+import { acquireLock, lockHeld, readOwner, retireStorageOwner, alive } from '../server/lock.ts'
 import * as processes from '../lib/process-group.ts'
 
 const directories: string[] = []
@@ -63,4 +63,15 @@ it('holds ownership until close, then lets a waiting contender acquire it', asyn
   )
   await rm(file)
   locks.push(await acquireLock(file, { pid: process.pid }))
+})
+it('checks the held lock rather than trusting a leftover owner file', async () => {
+  const file = await path()
+  await writeFile(file, JSON.stringify({ pid: process.pid }))
+  expect(lockHeld(file)).toBe(false)
+  const lock = await acquireLock(file, { pid: process.pid })
+  locks.push(lock)
+  expect(lockHeld(file)).toBe(true)
+  await lock.close()
+  locks.splice(locks.indexOf(lock), 1)
+  expect(lockHeld(file)).toBe(false)
 })

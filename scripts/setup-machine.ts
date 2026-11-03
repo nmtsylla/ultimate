@@ -143,7 +143,7 @@ function services(options: UnitOptions, path: string): Service[] {
       description: `Ultimate (${project})`,
       cwd: project,
       env: { PATH: path, ULTIMATE_NO_OPEN: '1' },
-      args: [node, join(clone, 'bin/ultimate.ts')],
+      args: [node, join(clone, 'bin/ultimate.ts'), '--foreground'],
     },
   ]
 }

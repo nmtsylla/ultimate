@@ -66,9 +66,13 @@ it('moves the state into a backup folder and keeps worktrees and project.json', 
 it('keeps Ultimate from starting on a home an interrupted reset left half moved', async () => {
   const { user, project, home } = await fixture()
   await writeFile(join(home, 'reset.json'), JSON.stringify({ backup: '/b' }))
-  const started = await run(process.execPath, [resolve('bin/ultimate.ts'), project, '--no-open'], {
-    env: cleanEnv({ HOME: user }),
-  }).catch((error: { code: number; stderr: string }) => error)
+  const started = await run(
+    process.execPath,
+    [resolve('bin/ultimate.ts'), project, '--foreground', '--no-open'],
+    {
+      env: cleanEnv({ HOME: user }),
+    },
+  ).catch((error: { code: number; stderr: string }) => error)
   expect(started).toMatchObject({
     code: 1,
     stderr: expect.stringContaining(`A reset or restore of ${home} was interrupted`),

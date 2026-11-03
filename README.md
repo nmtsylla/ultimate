@@ -60,9 +60,9 @@ Then:
 3. Model login, per "Recommended models": for Claude Code, install the CLI and let me run `claude auth login`
    myself; otherwise I log in from Ultimate's command palette (Ctrl+K, ⌘K on macOS) → "Log in to a provider".
    Never read, copy or handle my credentials.
-4. Start it: `pnpm start` runs Ultimate on its own repository, `ultimate` inside one of my projects runs it there.
-   Tell me to open the URL it prints (http://127.0.0.1:4747 for the first one), where Get ready asks for a login
-   and a model the first time.
+4. Start it: `pnpm start` runs Ultimate on its own repository in the foreground; `ultimate` inside a project starts it in the background and opens it.
+   `ultimate list` shows running folders and their URLs; `ultimate stop [dir]` stops one. On first start, open the app or
+   run `ultimate list` for its local URL (http://127.0.0.1:4747 for the first one); Get ready asks for a login and model.
 5. In a few sentences, using AGENTS.md "How work is organised", explain what I'll see: @ultimate in the first
    sidebar row, the command palette, and branches doing the work. Then suggest a first prompt, such as "Walk me through how you
    work" or a small real task in my project.
@@ -84,8 +84,10 @@ screenshot and browser tools need a Chromium: `/usr/bin/chromium`, Google Chrome
 ```bash
 pnpm install
 pnpm link --global  # once, in this clone, to get the `ultimate` command (`pnpm setup` first if pnpm's global bin is not on PATH)
-pnpm start          # Ultimate on its own repository; opens http://127.0.0.1:4747
-cd ~/Projects/app && ultimate  # or Ultimate on one of your projects
+pnpm start          # Ultimate on its own repository; foreground dashboard
+cd ~/Projects/app && ultimate  # background server and app window
+ultimate list
+ultimate stop       # stop Ultimate for the current folder
 ```
 
 - **First start** on a machine shows Get ready: log in to a provider and choose a model. Continue opens @ultimate,
@@ -122,11 +124,11 @@ account limits, and subscription coverage is not guaranteed. This is a recommend
 
 ### Terminal status
 
-`pnpm start` / `ultimate` shows a compact live terminal dashboard: the public URL, supervisor/core lifecycle,
-core generation and PID, embedded Vite readiness, registered extension services, and the last event. Routine
-Vite/HMR output updates the dashboard instead of scrolling; warnings and errors remain in scrollback. Redirected
-output is plain text with no dashboard escape sequences. Detailed, timestamped JSON lines (including routine
-output and diagnostics) are appended to `<state home>/supervisor.log`; this file is not automatically rotated.
+`pnpm start` and `ultimate --foreground` show a compact live terminal dashboard: the public URL, supervisor/core lifecycle,
+core generation and PID, embedded Vite readiness, registered extension services, and the last event. The normal `ultimate`
+command starts the supervisor in the background and returns; it still opens the app window. Routine Vite/HMR output updates
+the dashboard instead of scrolling; warnings and errors remain in scrollback. Detailed, timestamped JSON lines (including
+routine output and diagnostics) are appended to `<state home>/supervisor.log`; this file is not automatically rotated.
 A log-write failure warns once and does not stop supervision.
 
 Services are status reports, not separate processes. Automations reports `ready · durable scheduler` when the
@@ -135,10 +137,11 @@ Supervisor changes require a **manual stop and restart with `pnpm start`**; a co
 
 ### In your project
 
-`ultimate [dir] [--port N] [--no-open]` starts Ultimate for a project (default: the current directory) and opens it
-as its own chromeless window in a Chrome-family browser (`http://ultimate.localhost:<port>`), or a tab when there is
-none. Running it again for a running project opens another window instead. Ultimate's own source stays in the clone;
-the tools and the conversation work in your project.
+`ultimate [dir] [--port N] [--no-open] [--foreground]` starts Ultimate for a project (default: the current directory) in the background by default
+and opens it as its own chromeless window in a Chrome-family browser (`http://ultimate.localhost:<port>`), or a tab when
+there is none. Running it again for a running project opens another window instead. Use `ultimate list` to see the running
+folders with their local and current Tailscale HTTPS URLs, `ultimate stop [dir]` to stop a project, or `--foreground` to show the dashboard in the terminal.
+Ultimate's own source stays in the clone; the tools and the conversation work in your project.
 
 - **`.ultimate/` in your project** tailors it: `extensions/`, `agents/`, `skills/`, and an optional `settings.json`
   (`defaultSurface` picks the surface to open). Ultimate also reads your personal `~/.ultimate/` the same way. Lookup
