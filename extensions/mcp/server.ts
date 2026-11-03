@@ -12,18 +12,25 @@ import {
   McpClient,
   McpError,
   McpTimeoutError,
+  McpHttpError,
   StdioTransport,
   StreamableHttpTransport,
   toLlmContent,
 } from '@earendil-works/pi-mcp'
-import type { Tool } from '@earendil-works/pi-mcp'
+import type { AuthProvider, Tool } from '@earendil-works/pi-mcp'
+import {
+  McpOAuthAuthorizationRequiredError,
+  adaptOAuthProvider,
+} from '@earendil-works/pi-mcp/oauth'
 import { implementAction } from '../../lib/actions.ts'
 import { readSecret } from '../../lib/secrets.ts'
 import { readSettings, userSettingsPath } from '../../lib/settings.ts'
 import type { ExtensionAction } from '../../server/actions.ts'
 import type { ExtensionHost } from '../../server/extensions.ts'
-import { ReconnectAction, StatusAction } from './refs.ts'
+import { ReconnectAction, LoginAction, LogoutAction, StatusAction } from './refs.ts'
 import type { McpServerStatus } from './refs.ts'
+import { beginLogin, forgetCredentials, oauthProvider, storedCredentials } from './oauth.ts'
+import type { LoginFlow } from './oauth.ts'
 
 export const reloadOnSettings = true
 export const pollActions = ['status']
@@ -48,6 +55,8 @@ type Server = Omit<McpServerStatus, 'tools'> & {
   connecting?: Promise<void>
   /** The secret values its config resolved, kept out of every error it shows. */
   secrets: string[]
+  /** The browser sign-in waiting for its redirect, while the user finishes it in the browser. */
+  login?: { url: string; close(): Promise<void> }
 }
 
 const isObject = (value: unknown): value is Record<string, unknown> =>
@@ -79,6 +88,14 @@ function entryOf(value: unknown): Entry | string {
 }
 
 const SECRET = /\$\{([A-Z][A-Z0-9_]*)\}/g
+
+/**
+ * OAuth applies to an HTTP server that brings no `Authorization` header: an explicit token or service credential keeps
+ * winning, and stdio servers never see it.
+ */
+const oauthApplies = (entry: Entry) =>
+  'url' in entry &&
+  !Object.keys(entry.headers).some((name) => name.toLowerCase() === 'authorization')
 
 /** The secrets an entry names with `${NAME}`, in its url, headers, command args and env. */
 const placeholders = (entry: Entry) =>
@@ -173,9 +190,17 @@ const listing = (server: Server) =>
   ].join('\n')
 const failure = (text: string) => ({ output: [{ type: 'text' as const, text }], isError: true })
 
+/** What a sign-in did: stored tokens still refreshed, the browser is needed, or it failed and the row says why. */
+type SignIn = 'authorized' | 'waiting' | 'failed'
+
 const views = new WeakMap<
   ExtensionHost,
-  { status(): McpServerStatus[]; reconnect(name: string): Promise<void> }
+  {
+    status(): McpServerStatus[]
+    reconnect(name: string): Promise<void>
+    login(name: string): Promise<void>
+    logout(name: string): Promise<void>
+  }
 >()
 
 export const actions: Record<string, ExtensionAction> = {
@@ -185,6 +210,20 @@ export const actions: Record<string, ExtensionAction> = {
     const name = isObject(args) ? args.name : undefined
     if (!view || typeof name !== 'string') throw new Error('reconnect: name is required')
     await view.reconnect(name)
+    return view.status()
+  }),
+  login: implementAction(LoginAction, async (args, { host }) => {
+    const view = views.get(host)
+    const name = isObject(args) ? args.name : undefined
+    if (!view || typeof name !== 'string') throw new Error('login: name is required')
+    await view.login(name)
+    return view.status()
+  }),
+  logout: implementAction(LogoutAction, async (args, { host }) => {
+    const view = views.get(host)
+    const name = isObject(args) ? args.name : undefined
+    if (!view || typeof name !== 'string') throw new Error('logout: name is required')
+    await view.logout(name)
     return view.status()
   }),
 }
@@ -224,19 +263,33 @@ export default async function mcp(host: ExtensionHost) {
         fail(server, 'Disconnected')
     })
     let stdio: StdioTransport | undefined
+    let oauthUrl: string | undefined
     try {
-      const transport =
-        'url' in entry
-          ? new StreamableHttpTransport({
-              url: await expand(host.userHome, entry.url, found),
-              headers: await expandAll(host.userHome, entry.headers, found),
-            })
-          : (stdio = new StdioTransport({
-              command: entry.command,
-              args: await Promise.all(entry.args.map((arg) => expand(host.userHome, arg, found))),
-              env: await expandAll(host.userHome, entry.env, found),
-              cwd: entry.cwd ?? host.projectRoot,
-            }))
+      let transport: StdioTransport | StreamableHttpTransport
+      if ('url' in entry) {
+        const url = await expand(host.userHome, entry.url, found)
+        oauthUrl = oauthApplies(entry) ? url : undefined
+        // Only an OAuth server has credentials to show; a stored file left from another config stays invisible.
+        if (oauthUrl) {
+          const credentials = await storedCredentials(host.userHome, url)
+          server.signedIn = credentials.signedIn
+          server.expiresAt = credentials.expiresAt
+          found.push(...credentials.values)
+        }
+        const auth = oauthUrl ? await authProvider(url) : undefined
+        transport = new StreamableHttpTransport({
+          url,
+          headers: await expandAll(host.userHome, entry.headers, found),
+          ...(auth ? { authProvider: auth } : {}),
+        })
+      } else {
+        transport = stdio = new StdioTransport({
+          command: entry.command,
+          args: await Promise.all(entry.args.map((arg) => expand(host.userHome, arg, found))),
+          env: await expandAll(host.userHome, entry.env, found),
+          cwd: entry.cwd ?? host.projectRoot,
+        })
+      }
       await client.connect(transport)
       client.onNotification('notifications/tools/list_changed', () => {
         client
@@ -254,10 +307,32 @@ export default async function mcp(host: ExtensionHost) {
       server.tools = tools
       server.state = 'connected'
       server.attempts = 0
+      if (oauthUrl) {
+        // A refresh during this connect replaces the token, and with it the expiry the popover shows.
+        const credentials = await storedCredentials(host.userHome, oauthUrl)
+        server.signedIn = credentials.signedIn
+        server.expiresAt = credentials.expiresAt
+        found.push(...credentials.values)
+      }
     } catch (error) {
       if (closed || server.client !== client) return
       if (error instanceof MissingSecret) server.missing = error.secret
       const stderr = stdio?.stderr.trim().split('\n').at(-1)
+      // The server wants OAuth credentials this machine has none of, or cannot renew: wait for a sign-in instead of
+      // retrying into the same 401.
+      if (
+        oauthApplies(entry) &&
+        (error instanceof McpOAuthAuthorizationRequiredError ||
+          (error instanceof McpHttpError && error.status === 401))
+      ) {
+        server.client = undefined
+        server.state = 'needs-login'
+        server.tools = []
+        delete server.signedIn
+        delete server.expiresAt
+        await close(client)
+        return
+      }
       fail(
         server,
         [redact(server, error), stderr && redact(server, stderr)].filter(Boolean).join(': '),
@@ -304,6 +379,100 @@ export default async function mcp(host: ExtensionHost) {
     })
   }
 
+  /**
+   * The OAuth credentials of a connect: the transport refreshes a stored token after a 401, and nothing is registered or
+   * opened in a browser here. Without stored credentials it gets none, so a 401 leaves the server waiting for a sign-in
+   * instead of retrying forever.
+   */
+  async function authProvider(url: string): Promise<AuthProvider | undefined> {
+    const provider = oauthProvider({
+      userHome: host.userHome,
+      serverUrl: url,
+      // A connect may refresh a token, never authorize: the user signs in from the status line instead.
+      onRedirect: () => {
+        throw new McpOAuthAuthorizationRequiredError()
+      },
+    })
+    const [client, tokens] = await Promise.all([provider.clientInformation(), provider.tokens()])
+    if (!client || !tokens) return undefined
+    return adaptOAuthProvider({
+      redirectUrl: provider.redirectUrl,
+      clientMetadata: provider.clientMetadata,
+      state: () => provider.state(),
+      clientInformation: () => provider.clientInformation(),
+      saveClientInformation: (information) => provider.saveClientInformation(information),
+      tokens: () => provider.tokens(),
+      saveTokens: (saved) => provider.saveTokens(saved),
+      redirectToAuthorization: (target) => provider.redirectToAuthorization(target),
+      saveCodeVerifier: (verifier) => provider.saveCodeVerifier(verifier),
+      codeVerifier: () => provider.codeVerifier(),
+      // A rejected client would make the flow drop the registration and register again. A connect only ever renews the
+      // token it already has, so the client stays and the server waits for a sign-in.
+      invalidateCredentials: (kind) =>
+        provider.invalidateCredentials(kind === 'verifier' ? 'verifier' : 'tokens'),
+      saveDiscoveryState: (state) => provider.saveDiscoveryState(state),
+      discoveryState: () => provider.discoveryState(),
+    })
+  }
+
+  /** Ends a sign-in still waiting for its browser redirect. */
+  async function cancelLogin(server: Server) {
+    const login = server.login
+    if (!login) return
+    delete server.login
+    await login.close()
+  }
+
+  /**
+   * Starts a browser sign-in and returns once the page to open is known. The redirect, the token exchange and the
+   * connect run on afterwards and report into the server's state: the browser round trip takes as long as the user does.
+   * It never throws; `'authorized'` means stored tokens still refreshed and nothing went to the browser.
+   */
+  async function signIn(server: Server): Promise<SignIn> {
+    const entry = server.entry
+    if (!entry || !('url' in entry)) return 'failed'
+    clearTimeout(server.timer)
+    delete server.retryAt
+    delete server.error
+    await cancelLogin(server)
+    const found: string[] = []
+    server.secrets = found
+    let flow: LoginFlow
+    try {
+      flow = await beginLogin({
+        userHome: host.userHome,
+        serverUrl: await expand(host.userHome, entry.url, found),
+      })
+    } catch (error) {
+      server.state = 'needs-login'
+      server.error = `Sign-in failed: ${redact(server, error)}`
+      return 'failed'
+    }
+    // The extension went away while the flow was discovering: its listener must not outlive it.
+    if (closed) {
+      await flow.close()
+      return 'failed'
+    }
+    if (!flow.url) return 'authorized'
+    const login = { url: flow.url, close: () => flow.close() }
+    server.login = login
+    server.state = 'needs-login'
+    void flow.authorized.then(
+      async () => {
+        if (server.login === login) delete server.login
+        if (!closed) await restart(server)
+      },
+      (error: unknown) => {
+        // Signed out or signed in again meanwhile: that ended this wait, and it needs no error of its own.
+        if (server.login !== login) return
+        delete server.login
+        server.state = 'needs-login'
+        server.error = `Sign-in failed: ${redact(server, error)}`
+      },
+    )
+    return 'waiting'
+  }
+
   views.set(host, {
     status: () =>
       [...servers.values()].map((server) => ({
@@ -315,11 +484,61 @@ export default async function mcp(host: ExtensionHost) {
         ...(server.error ? { error: server.error } : {}),
         ...(server.missing ? { missing: server.missing } : {}),
         ...(server.retryAt ? { retryAt: server.retryAt } : {}),
+        ...(server.signedIn ? { signedIn: true } : {}),
+        ...(server.expiresAt ? { expiresAt: server.expiresAt } : {}),
+        ...(server.login ? { loginUrl: server.login.url } : {}),
       })),
     async reconnect(name) {
       const server = servers.get(name)
       if (!server) throw new Error(`No MCP server named ${name}`)
       await restart(server)
+    },
+    async login(name) {
+      const server = servers.get(name)
+      if (!server) throw new Error(`No MCP server named ${name}`)
+      const entry = server.entry
+      if (!entry || !('url' in entry))
+        throw new Error(`${name} is a stdio server: sign-in is for HTTP servers`)
+      if (!oauthApplies(entry))
+        throw new Error(`${name} sends its own Authorization header, so it never uses OAuth`)
+      // Behind a connect, so the flow and a connect never write the stored credentials at the same time.
+      const signedIn: { outcome: SignIn } = { outcome: 'failed' }
+      await queue(server, async () => {
+        signedIn.outcome = await signIn(server)
+      })
+      // Stored credentials still refreshed, so nothing went to the browser: connect with the token they left.
+      if (signedIn.outcome === 'authorized') await restart(server)
+    },
+    async logout(name) {
+      const server = servers.get(name)
+      if (!server) throw new Error(`No MCP server named ${name}`)
+      const entry = server.entry
+      if (!entry || !('url' in entry))
+        throw new Error(`${name} is a stdio server: it has no sign-in`)
+      // A sign-in waiting for its browser ends now, before the queue; the queued work then drops the credentials.
+      await cancelLogin(server)
+      const outcome: { error?: unknown } = {}
+      await queue(server, async () => {
+        try {
+          const previous = server.client
+          server.client = undefined
+          await close(previous)
+          const found: string[] = []
+          server.secrets = found
+          await forgetCredentials(host.userHome, await expand(host.userHome, entry.url, found))
+          clearTimeout(server.timer)
+          server.tools = []
+          server.state = 'needs-login'
+          delete server.error
+          delete server.retryAt
+          delete server.signedIn
+          delete server.expiresAt
+        } catch (error) {
+          // Queue work never rejects, so the caller gets this failure instead of a stuck chain.
+          outcome.error = error
+        }
+      })
+      if (outcome.error) throw outcome.error
     },
   })
 
@@ -334,6 +553,7 @@ export default async function mcp(host: ExtensionHost) {
   host.onClose(async () => {
     closed = true
     for (const server of servers.values()) clearTimeout(server.timer)
+    await Promise.all([...servers.values()].map((server) => cancelLogin(server)))
     await Promise.all([...servers.values()].map((server) => close(server.client)))
   })
 
@@ -364,7 +584,9 @@ export default async function mcp(host: ExtensionHost) {
               await server.connecting
               if (server.state !== 'connected' || !server.client)
                 return failure(
-                  `MCP server ${name} is ${server.state}: ${server.error ?? 'not connected'}`,
+                  server.state === 'needs-login'
+                    ? `MCP server ${name} needs a sign-in: the user connects it from the mcp chip in the status line`
+                    : `MCP server ${name} is ${server.state}: ${server.error ?? 'not connected'}`,
                 )
               if (!tool) return { output: [{ type: 'text', text: listing(server) }] }
               const client = server.client

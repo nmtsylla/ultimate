@@ -7,22 +7,26 @@ import {
   defineWebExtension,
   errorMessage,
   events,
+  formatTime,
+  plural,
   provide,
   useAction,
   useEvent,
   useNow,
 } from '@/sdk'
 import { ExtensionDetails } from '../onboarding/ui.tsx'
-import { ReconnectAction, StatusAction } from './refs.ts'
+import { LoginAction, LogoutAction, ReconnectAction, StatusAction } from './refs.ts'
 import type { McpServerStatus } from './refs.ts'
 
 /**
- * Every server's state, read again every few seconds while one is connecting, just after the next retry of a failed
- * one, and every minute otherwise.
+ * Every server's state, read again every few seconds while one is connecting or waiting for a sign-in, just after the
+ * next retry of a failed one, and every minute otherwise.
  */
 function useServers(enabled = true) {
   const status = useAction(StatusAction, null, { enabled, onError: () => {} })
-  const settling = status.data?.some((server) => server.state === 'connecting') ?? false
+  const settling =
+    status.data?.some((server) => server.state === 'connecting' || server.loginUrl !== undefined) ??
+    false
   const now = useNow(settling ? 2_000 : 60_000)
   const retry = Math.min(...(status.data ?? []).map((server) => server.retryAt ?? Infinity))
   const { refetch } = status
@@ -43,17 +47,31 @@ const tone: Record<McpServerStatus['state'], string> = {
   connected: 'bg-success',
   connecting: 'bg-muted-foreground/50',
   failed: 'bg-error',
+  'needs-login': 'bg-warning',
 }
+
+/** The row's right-hand word: tool count, the wait for the browser, or the state. */
+function stateLabel(server: McpServerStatus) {
+  if (server.state === 'connected') return plural(server.tools ?? 0, 'tool')
+  if (server.state === 'needs-login') return server.loginUrl ? 'waiting' : 'needs login'
+  return server.state
+}
+
+/** `14:32`, or that the token ran out; the next request refreshes it. */
+const expiry = (at: number) => (at > Date.now() ? formatTime(at) : 'expired')
+
+const smallButton =
+  'rounded-sm border border-border px-1.5 py-0.5 text-[11px] text-foreground/90 transition-colors hover:bg-accent disabled:opacity-50'
 
 function Row({ server, onChanged }: { server: McpServerStatus; onChanged: () => void }) {
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState<string>()
   const now = useNow(1_000, server.retryAt !== undefined)
-  const reconnect = async () => {
+  const run = async (work: () => Promise<unknown>) => {
     setBusy(true)
     setError(undefined)
     try {
-      await api.action(ReconnectAction, { name: server.name })
+      await work()
     } catch (failure) {
       setError(errorMessage(failure))
     } finally {
@@ -61,6 +79,16 @@ function Row({ server, onChanged }: { server: McpServerStatus; onChanged: () => 
       onChanged()
     }
   }
+  const reconnect = () => run(() => api.action(ReconnectAction, { name: server.name }))
+  const connect = () =>
+    run(async () => {
+      const servers = await api.action(LoginAction, { name: server.name })
+      const url = servers.find((other) => other.name === server.name)?.loginUrl
+      // The click's activation survives the local round trip in most browsers, so the sign-in page opens from here;
+      // the row's link covers one that blocks it.
+      if (url) window.open(url, '_blank', 'noreferrer')
+    })
+  const logout = () => run(() => api.action(LogoutAction, { name: server.name }))
   // Its missing secret, once saved in the Secrets panel, connects it again at once instead of at the next retry.
   useEvent('secrets:changed', (data) => {
     if (server.missing && (data as { name?: unknown } | undefined)?.name === server.missing)
@@ -78,9 +106,7 @@ function Row({ server, onChanged }: { server: McpServerStatus; onChanged: () => 
           {server.source === 'project' && ' · project'}
         </span>
         <span className="ml-auto shrink-0 text-[11px] text-muted-foreground">
-          {server.state === 'connected'
-            ? `${server.tools} ${server.tools === 1 ? 'tool' : 'tools'}`
-            : server.state}
+          {stateLabel(server)}
         </span>
         <button
           aria-label={`Reconnect ${server.name}`}
@@ -97,6 +123,22 @@ function Row({ server, onChanged }: { server: McpServerStatus; onChanged: () => 
           )}
         </button>
       </div>
+      {server.signedIn && (
+        <div className="mt-0.5 flex items-center gap-2 pl-3.5 text-[11px] text-muted-foreground/70">
+          <span className="min-w-0 truncate">
+            signed in
+            {server.expiresAt ? ` · token expires ${expiry(server.expiresAt)}` : ''}
+          </span>
+          <button
+            className={cn(smallButton, 'ml-auto')}
+            disabled={busy}
+            onClick={() => void logout()}
+            type="button"
+          >
+            Log out
+          </button>
+        </div>
+      )}
       {(server.error || error) && (
         <p className="mt-0.5 line-clamp-3 pl-3.5 text-[11px] leading-snug break-words text-error/85">
           {error ?? server.error}
@@ -107,12 +149,32 @@ function Row({ server, onChanged }: { server: McpServerStatus; onChanged: () => 
       )}
       {server.missing && (
         <button
-          className="mt-1 ml-3.5 rounded-sm border border-border px-1.5 py-0.5 text-[11px] text-foreground/90 transition-colors hover:bg-accent"
+          className={cn(smallButton, 'mt-1 ml-3.5')}
           onClick={() => events.emit('secrets:open', { name: server.missing })}
           type="button"
         >
           Add {server.missing}
         </button>
+      )}
+      {server.state === 'needs-login' && !server.loginUrl && (
+        <button
+          className={cn(smallButton, 'mt-1 ml-3.5')}
+          disabled={busy}
+          onClick={() => void connect()}
+          type="button"
+        >
+          Connect
+        </button>
+      )}
+      {server.loginUrl && (
+        <a
+          className={cn(smallButton, 'mt-1 ml-3.5 inline-block')}
+          href={server.loginUrl}
+          rel="noreferrer"
+          target="_blank"
+        >
+          Open sign-in page
+        </a>
       )}
     </li>
   )
@@ -129,14 +191,16 @@ function Servers({ servers, onChanged }: { servers: McpServerStatus[]; onChanged
 }
 
 /**
- * "mcp 2/3" in the status line: connected out of configured servers, red while one failed. Hidden while none is
- * configured; the popover lists each server with its state, tool count and a reconnect button.
+ * "mcp 2/3" in the status line: connected out of configured servers, red while one failed and warning-coloured while
+ * one waits for a sign-in. Hidden while none is configured; the popover lists each server with its state, tool count,
+ * sign-in controls and a reconnect button.
  */
 function Chip() {
   const { data: servers, refetch } = useServers()
   if (!servers?.length) return null
   const connected = servers.filter((server) => server.state === 'connected').length
   const failed = servers.some((server) => server.state === 'failed')
+  const needsLogin = servers.some((server) => server.state === 'needs-login')
   const refresh = () => void refetch()
   return (
     <Popover>
@@ -145,9 +209,17 @@ function Chip() {
           aria-label="MCP servers"
           className={cn(
             '-mx-1 flex cursor-pointer items-center gap-1.5 rounded-sm px-1 transition-colors hover:bg-accent hover:text-foreground data-[state=open]:bg-accent data-[state=open]:text-foreground',
-            failed && 'text-error',
+            failed ? 'text-error' : needsLogin && 'text-warning',
           )}
-          data-mcp={failed ? 'failed' : connected === servers.length ? 'connected' : 'connecting'}
+          data-mcp={
+            failed
+              ? 'failed'
+              : needsLogin
+                ? 'login'
+                : connected === servers.length
+                  ? 'connected'
+                  : 'connecting'
+          }
           type="button"
         >
           <PlugIcon className="size-3" />
