@@ -75,4 +75,5 @@ Off by default: a screen for the whole machine is the user's choice. Turn it on 
 { "extensions": { "enable": ["mission-control"] } }
 ```
 
-The UI is built separately; until then the action is what exists.
+Once on, it adds the **Mission control** surface (`Open Mission control` in ⌘K) and a status-line chip showing how many
+other instances on this machine need you; the screen and the chip poll `fleet` every 30 seconds while mounted.
