@@ -20,6 +20,7 @@ import { imagesOf, latestImagesEntry } from '../../lib/entries.ts'
 import type { ExtensionHost } from '../../server/extensions.ts'
 import { AutomationsApi } from '../automations/api.ts'
 import { Standing } from '../subagents/api.ts'
+import { GoalApi } from './api.ts'
 import { deliver, deliverTask } from './delivery.ts'
 import { reminderTask } from './reminder.ts'
 import { EndAction, GoalDoc, ImagesAction, StartAction } from './refs.ts'
@@ -292,6 +293,12 @@ export const actions = {
 export default function goalExtension(host: ExtensionHost) {
   // Optional: without automations a goal runs as before, with no reminder.
   host.want(AutomationsApi)
+  host.implement(GoalApi, {
+    open: async () =>
+      (await host.harness().snapshot(Goals, ROOT_CONVERSATION_ID, context))?.goals.find(
+        (goal) => !goal.ended,
+      ),
+  })
   return defineExtension({
     name: 'goal',
     tasks: [deliverTask(host), reminderTask(host, Goals)],

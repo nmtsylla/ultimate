@@ -25,6 +25,7 @@ import { HealthApi } from '../health/api.ts'
 import type { MemoryDoc, RootsDoc } from '../lineage/refs.ts'
 import { Standing } from '../subagents/api.ts'
 import { TailscaleApi } from '../tailscale/api.ts'
+import { SetupApi } from './api.ts'
 import { CheckAction } from './refs.ts'
 import type { SetupIssue } from './refs.ts'
 
@@ -400,15 +401,19 @@ export async function noteFor(
 }
 
 export default function setup(host: ExtensionHost) {
-  // The check reads files and the model runtime: cached briefly so a burst of inputs reads once.
+  // The check reads files and the model runtime: cached briefly so a burst of inputs, or a status poll, reads once.
   const cache = host.resource('setup.check', () => ({ at: 0, issues: [] as SetupIssue[] }))
-  const current = async (tx: Tx) => {
+  /** The cached issues; a caller inside a commit passes its `tx` as the reader, or it waits on its own line. */
+  const current = async (read?: ReadDoc) => {
     if (Date.now() - cache.at > 30_000) {
-      cache.issues = await check(host, (doc, id) => tx.doc(doc, id))
+      cache.issues = await check(host, read)
       cache.at = Date.now()
     }
     return cache.issues
   }
+  host.implement(SetupApi, {
+    warnings: async () => (await current()).filter((issue) => issue.status === 'warn'),
+  })
   return defineExtension({
     name: 'setup',
     hooks: [
@@ -420,7 +425,12 @@ export default function setup(host: ExtensionHost) {
           const standing = await tx.doc(Standing, ROOT_CONVERSATION_ID)
           if (standing.ultimate !== conversationId) return undefined
           // A check that fails here only skips the note; the status line still shows the setup.
-          return noteFor(tx, conversationId, await current(tx).catch(() => undefined), Date.now())
+          return noteFor(
+            tx,
+            conversationId,
+            await current((doc, id) => tx.doc(doc, id)).catch(() => undefined),
+            Date.now(),
+          )
         },
       }),
     ],

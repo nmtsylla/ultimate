@@ -35,6 +35,21 @@ export type Status = {
     enabled: boolean
     error?: string
   }[]
+  /**
+   * This server's tailnet URL, from Tailscale's status (`TailscaleApi.status().url`). Absent while Tailscale is off or
+   * not published.
+   */
+  url?: string
+  /**
+   * The setup issues that cost the user something now (`SetupApi.warnings()`), `first` the one setup lists first.
+   * Absent while Setup is off; `count` 0 when nothing needs setting up.
+   */
+  setup?: { count: number; first?: { area: string; summary: string } }
+  /**
+   * The hands-off goal that is open (`GoalApi.open()`), with why it waits when it is paused. Absent when none is open
+   * or Goal is off.
+   */
+  goal?: { id: number; text: string; waiting?: { reason: string; at: number } }
 }
 
 /** `{ since? }` (epoch ms, default 24 hours ago) → this Ultimate's status. Read-only. */

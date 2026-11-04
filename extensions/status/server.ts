@@ -3,8 +3,11 @@ import { BACKGROUND_CONTEXT as context } from '@earendil-works/chord/context'
 import { defineExtension } from '@earendil-works/pi-durable'
 import { implementAction } from '../../lib/actions.ts'
 import type { ExtensionHost } from '../../server/extensions.ts'
+import { GoalApi } from '../goal/api.ts'
 import { HealthApi } from '../health/api.ts'
 import { MessagesApi } from '../messages/api.ts'
+import { SetupApi } from '../setup/api.ts'
+import { TailscaleApi } from '../tailscale/api.ts'
 import { UpdateApi } from '../update/api.ts'
 import { WatchdogApi } from '../watchdog/api.ts'
 import { StatusAction } from './refs.ts'
@@ -16,13 +19,20 @@ export async function status(host: ExtensionHost, since: number, now: number): P
   const update = host.want(UpdateApi)
   const watchdog = host.want(WatchdogApi)
   const health = host.want(HealthApi)
-  const [clone, failures, providers, open] = await Promise.all([
+  const tailscale = host.want(TailscaleApi)
+  const setup = host.want(SetupApi)
+  const goal = host.want(GoalApi)
+  const [clone, failures, providers, open, warnings, openGoal] = await Promise.all([
     update?.state(),
     watchdog?.failures(since),
     health?.providers(),
     host.need(MessagesApi).openQuestions(context),
+    setup?.warnings(),
+    goal?.open(),
   ])
   const first = open[0]
+  const url = tailscale?.status().url
+  const firstWarning = warnings?.[0]
   return {
     at: now,
     ...(clone?.head
@@ -72,6 +82,28 @@ export async function status(host: ExtensionHost, since: number, now: number): P
       enabled,
       ...(server?.error ? { error: server.error } : {}),
     })),
+    ...(url ? { url } : {}),
+    ...(warnings
+      ? {
+          setup: {
+            count: warnings.length,
+            ...(firstWarning
+              ? { first: { area: firstWarning.area, summary: firstWarning.summary } }
+              : {}),
+          },
+        }
+      : {}),
+    ...(openGoal
+      ? {
+          goal: {
+            id: openGoal.id,
+            text: openGoal.text,
+            ...(openGoal.waiting
+              ? { waiting: { reason: openGoal.waiting.reason, at: openGoal.waiting.at } }
+              : {}),
+          },
+        }
+      : {}),
   }
 }
 
@@ -81,6 +113,9 @@ export default function statusExtension(host: ExtensionHost) {
   host.want(UpdateApi)
   host.want(WatchdogApi)
   host.want(HealthApi)
+  host.want(TailscaleApi)
+  host.want(SetupApi)
+  host.want(GoalApi)
   return defineExtension({ name: 'status' })
 }
 

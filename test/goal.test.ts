@@ -94,6 +94,7 @@ function fakeHost(tx: ReturnType<typeof fakeTx>) {
     harness: () => ({ commit: (fn: (tx: Tx) => unknown) => fn(tx) }),
     need: () => service,
     want: () => service,
+    implement: () => {},
     doc: () => undefined,
     invoke: async () => structuredClone([...ledger.values()]),
   } as unknown as ExtensionHost
@@ -195,6 +196,7 @@ it("notes the open goal on @ultimate's runs only, and lets only @ultimate keep i
     doc: () => undefined,
     need: () => undefined,
     want: () => undefined,
+    implement: () => {},
   } as unknown as ExtensionHost)
   const hooks = extension.hooks![0].handlers as GenerationHooks
   const before = (conversationId: number, kind = 'pi.user') =>
