@@ -205,7 +205,14 @@ function ReasonRow({
             </span>
           )}
           {item.note && (
-            <span className="mt-0.5 font-mono text-[11px] leading-snug break-words text-muted-foreground/70 line-clamp-2">
+            <span
+              className={cn(
+                'mt-0.5 font-mono text-[11px] leading-snug break-words text-muted-foreground/70',
+                // A failure's raw error (often a provider's JSON) stays on one line; the full text is in the tooltip.
+                item.failure ? 'line-clamp-1' : 'line-clamp-2',
+              )}
+              title={item.note}
+            >
               {item.note}
             </span>
           )}
