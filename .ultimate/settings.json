@@ -1,12 +1,13 @@
 {
   "extensions": {
-    "enable": ["voice-live"]
+    "enable": ["mission-control"],
+    "disable": ["voice-live"]
   },
   "modelFamilies": {
     "families": {
-      "lead": { "model": "claude-code/claude-opus-5-5", "thinking": "high", "color": "orange" },
-      "review": { "model": "openai-codex/gpt-6-astra", "thinking": "high" },
-      "fast": { "model": "openai-codex/gpt-6.1-sol" }
+      "lead": { "model": "opencode-go/glm-5.3", "thinking": "high", "color": "orange" },
+      "review": { "model": "kimi-coding/k3", "thinking": "high" },
+      "fast": { "model": "opencode/deepseek-v4.1-flash" }
     },
     "assign": {
       "preview": "fast"
