@@ -24,7 +24,16 @@ function sh(cmd, args) {
     encoding: 'utf8',
   });
   if (r.error) return { ok: false, out: '', err: String(r.error.message) };
-  return { ok: r.status === 0, out: (r.stdout ?? '').trim(), err: (r.stderr ?? '').trim() };
+  return { ok: r.status === 0, out: (r.stdout ?? '').trim(), raw: r.stdout ?? '', err: (r.stderr ?? '').trim() };
+}
+
+// Tracked changes as paths; -z keeps the status columns intact (a trimmed first line
+// would shift the path). Renames stay one entry each.
+function dirtyPaths() {
+  return git('status', '--porcelain', '-z', '--untracked-files=no', '--no-renames')
+    .raw.split('\0')
+    .filter(Boolean)
+    .map((entry) => entry.slice(3));
 }
 
 const git = (...args) => sh('git', ['-C', REPO, ...args]);
@@ -37,12 +46,14 @@ function first(items, n = 3) {
 }
 
 let stopping = false;
-process.on('SIGTERM', () => {
+let inPass = false;
+const stop = () => {
   stopping = true;
-});
-process.on('SIGINT', () => {
-  stopping = true;
-});
+  // A pass in flight finishes its merge/push; otherwise a signal ends the loop now.
+  if (!inPass) process.exit(0);
+};
+process.on('SIGTERM', stop);
+process.on('SIGINT', stop);
 
 const sleep = (ms) => new Promise((res) => setTimeout(res, ms));
 
@@ -68,13 +79,13 @@ async function onePass() {
 
   // 3. a dirty tree: retry every 30 min for up to 8 h.
   const dirtyUntil = Date.now() + 8 * HOUR;
-  let dirty = lines(git('status', '--porcelain', '--untracked-files=no').out).map((l) => l.slice(3));
+  let dirty = dirtyPaths();
   while (dirty.length) {
     if (Date.now() >= dirtyUntil) return fire(`working tree still dirty after 8h: ${first(dirty)}`);
     log(`working tree dirty — retry in 30 min: ${first(dirty)}`);
     const wait = Math.min(30 * MIN, Math.max(1_000, dirtyUntil - Date.now()));
     if (!(await pause(wait))) return;
-    dirty = lines(git('status', '--porcelain', '--untracked-files=no').out).map((l) => l.slice(3));
+    dirty = dirtyPaths();
   }
 
   // 4. fetch.
@@ -136,12 +147,15 @@ function msToNext6amUtc() {
 }
 
 if (process.argv.includes('--once')) {
+  inPass = true;
   await onePass();
 } else {
   log(`sleeping until 06:00 UTC — ${REPO}`);
   while (!stopping) {
     if (!(await pause(msToNext6amUtc()))) break;
+    inPass = true;
     await onePass();
+    inPass = false;
   }
   log('stopped');
 }
