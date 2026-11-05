@@ -1,5 +1,5 @@
 import { expect, it } from 'vitest'
-import { cleared, merge, needs, order } from '../extensions/mission-control/server.ts'
+import { cleared, fleet, merge, needs, order } from '../extensions/mission-control/server.ts'
 import type { Answer } from '../extensions/mission-control/server.ts'
 import type { Peer } from '../extensions/mission-control/refs.ts'
 import type { Status } from '../extensions/status/refs.ts'
@@ -170,4 +170,77 @@ it('refuses cleared marks that are not epoch milliseconds', () => {
   expect(cleared({ cleared: { '/code/my-app': 900 } })).toEqual({ '/code/my-app': 900 })
   expect(() => cleared({ cleared: { '/code/my-app': 'yesterday' } })).toThrow('epoch milliseconds')
   expect(() => cleared({ cleared: ['/code/my-app'] })).toThrow('epoch milliseconds')
+})
+
+/** A host whose projects and in-process status answer are the test's; `resource` keeps one round state, as the facet does. */
+function host(statusOf: () => Promise<unknown>, projects: () => Promise<unknown>) {
+  const resources = new Map<string, unknown>()
+  const calls = { projects: 0, status: 0 }
+  return {
+    calls,
+    resource: <T>(key: string, create: () => T): T => {
+      if (!resources.has(key)) resources.set(key, create())
+      return resources.get(key) as T
+    },
+    projects: async () => {
+      calls.projects++
+      return projects()
+    },
+    invoke: async () => {
+      calls.status++
+      return statusOf()
+    },
+  }
+}
+
+it('shares one round between callers and polls again after it ages out', async () => {
+  const fake = host(
+    async () => status(),
+    async () => [
+      { name: 'my-app', root: '/code/my-app', home: '/h/my-app', current: true },
+      { name: 'other-app', root: '/code/other-app', home: '/h/other-app', current: false },
+    ],
+  )
+  const options = { now: 1_000_000 }
+  const first = await fleet(fake as never, {}, options)
+  const second = await fleet(fake as never, {}, options)
+  expect(fake.calls.status).toBe(1)
+  expect(second.at).toBe(first.at)
+  expect(second.peers.map((peer) => peer.state)).toEqual(['running', 'stopped'])
+  // 15 s later the round is stale: the next caller polls again.
+  await fleet(fake as never, {}, { now: 1_016_000 })
+  expect(fake.calls.status).toBe(2)
+})
+
+it('starts a fresh round after one that failed as a whole', async () => {
+  let fail = true
+  const fake = host(
+    async () => status(),
+    async () => {
+      if (fail) throw new Error('projects are unreadable')
+      return [{ name: 'my-app', root: '/code/my-app', home: '/h/my-app', current: true }]
+    },
+  )
+  await expect(fleet(fake as never, {}, { now: 1_000_000 })).rejects.toThrow('unreadable')
+  fail = false
+  // Same instant: a failed round is not replayed, so this one asks again.
+  const fleetNow = await fleet(fake as never, {}, { now: 1_000_001 })
+  expect(fleetNow.peers.map((peer) => peer.state)).toEqual(['running'])
+})
+
+it('keeps an instance that stopped answering, and caps a local read that never returns', async () => {
+  let slow = false
+  const fake = host(
+    async () => (slow ? new Promise(() => {}) : status({ busy: 1 })),
+    async () => [{ name: 'my-app', root: '/code/my-app', home: '/h/my-app', current: true }],
+  )
+  const options = { now: 1_000_000 }
+  const first = await fleet(fake as never, {}, options)
+  expect(first.peers[0]?.status?.busy).toBe(1)
+  slow = true
+  // A read that ignores its signal is cut off at the round's cap, and the last answer stays.
+  const later = await fleet(fake as never, {}, { now: 1_016_000, timeoutMs: 100 })
+  expect(later.peers[0]?.state).toBe('unreachable')
+  expect(later.peers[0]?.error).toBe('did not answer within 100 ms')
+  expect(later.peers[0]?.status?.busy).toBe(1)
 })

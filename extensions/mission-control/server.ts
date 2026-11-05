@@ -15,6 +15,9 @@ const ROUND = 15_000
 /** How long one instance may take to answer before the round counts it unreachable. */
 const TIMEOUT = 5_000
 
+/** A duration as the screen reads it: `5 s`, `200 ms`. */
+const seconds = (ms: number) => (ms % 1000 === 0 ? `${ms / 1000} s` : `${ms} ms`)
+
 /** What one round learned about one project on this machine. */
 export type Answer = {
   /** The project's folder name. */
@@ -153,10 +156,35 @@ const isStatus = (value: unknown): value is Status => {
 /** One project before its answer: what a round knows without asking. */
 type Instance = Omit<Answer, 'status' | 'error'>
 
+/** `promise`'s result, or `signal`'s abort as a rejection: a call that ignores its signal still cannot outlive the round. */
+function capped<T>(promise: Promise<T>, signal: AbortSignal, timeoutMs: number): Promise<T> {
+  return new Promise<T>((resolve, reject) => {
+    const abort = () => reject(new Error(`did not answer within ${seconds(timeoutMs)}`))
+    if (signal.aborted) return abort()
+    signal.addEventListener('abort', abort, { once: true })
+    const settle = () => signal.removeEventListener('abort', abort)
+    promise.then(
+      (value) => {
+        settle()
+        resolve(value)
+      },
+      (error: unknown) => {
+        settle()
+        reject(error instanceof Error ? error : new Error(String(error)))
+      },
+    )
+  })
+}
+
 /** `instance`'s answer this round: its status, or why it has none. */
-async function ask(instance: Instance, call: () => Promise<unknown>): Promise<Answer> {
+async function ask(
+  instance: Instance,
+  call: () => Promise<unknown>,
+  signal: AbortSignal,
+  timeoutMs: number,
+): Promise<Answer> {
   try {
-    const status = await call()
+    const status = await capped(call(), signal, timeoutMs)
     if (!isStatus(status)) return { ...instance, error: 'answered something other than a status' }
     return { ...instance, status }
   } catch (error) {
@@ -165,7 +193,11 @@ async function ask(instance: Instance, call: () => Promise<unknown>): Promise<An
 }
 
 /** Every project on this machine, asked in parallel: this one in process, the others over their loopback URL. */
-async function poll(host: ExtensionHost, signal: AbortSignal): Promise<Answer[]> {
+async function poll(
+  host: ExtensionHost,
+  signal: AbortSignal,
+  timeoutMs: number,
+): Promise<Answer[]> {
   const projects = await host.projects()
   return Promise.all(
     projects.map(async (project) => {
@@ -175,10 +207,17 @@ async function poll(host: ExtensionHost, signal: AbortSignal): Promise<Answer[]>
         here: project.current,
         runs: project.current || !!project.running,
       }
-      if (project.current) return ask(instance, () => host.invoke('status', 'status', {}, signal))
+      // The in-process call takes no signal of its own, so `ask` caps it: a slow local read cannot outlive the round.
+      if (project.current)
+        return ask(instance, () => host.invoke('status', 'status', {}, signal), signal, timeoutMs)
       if (!project.running) return instance
       const target = { url: project.running.url, label: project.name }
-      return ask(instance, () => postAction(target, 'status', 'status', {}, signal))
+      return ask(
+        instance,
+        () => postAction(target, 'status', 'status', {}, signal),
+        signal,
+        timeoutMs,
+      )
     }),
   )
 }
@@ -194,12 +233,16 @@ type Round = {
 }
 
 /** The fleet, from a round at most `ROUND` old; `marks` is applied to the answers of that round. */
-export async function fleet(host: ExtensionHost, marks: Record<string, number>): Promise<Fleet> {
+export async function fleet(
+  host: ExtensionHost,
+  marks: Record<string, number>,
+  // The clock and the cap are the caller's only so a test can drive them; a real caller passes neither.
+  { now = Date.now(), timeoutMs = TIMEOUT }: { now?: number; timeoutMs?: number } = {},
+): Promise<Fleet> {
   const state = host.resource('mission-control.round', (): Round => ({ at: 0, before: [] }))
-  const now = Date.now()
   if (!state.round || now - state.at > ROUND) {
     state.at = now
-    state.round = poll(host, AbortSignal.timeout(TIMEOUT))
+    state.round = poll(host, AbortSignal.timeout(timeoutMs), timeoutMs)
   }
   const at = state.at
   const round = state.round
