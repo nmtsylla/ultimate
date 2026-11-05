@@ -66,7 +66,8 @@ function Jump({
       </button>
     )
   const url = peer.status?.url
-  if (!url) return <div className={className}>{children}</div>
+  // Another instance's answer is not trusted with a scheme: only an http(s) address is a link this origin opens.
+  if (!url || !/^https?:\/\//i.test(url)) return <div className={className}>{children}</div>
   const origin = url.replace(/\/+$/, '')
   return (
     <a
