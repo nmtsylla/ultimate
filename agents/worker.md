@@ -22,7 +22,7 @@ Acceptance criteria:
 - [x] criterion — evidence (command result or file:line).
 - [ ] criterion — NOT MET and why.
 Verification:
-- command — result.
+- command — result. Every claim names the command a reader can rerun and what it printed; a claim without its command does not count.
 Commit: <full SHA> <subject> | none
 Divergence: how the result differs from the task as given, or None.
 Risks: none | remaining risks.

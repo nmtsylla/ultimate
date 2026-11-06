@@ -50,7 +50,7 @@ Workers start with no context. Every brief states:
 
 1. Goal and why it matters.
 2. Exact scope: files or areas it may touch, and what is off-limits.
-3. Inputs: what you already know, so it doesn't rediscover it.
+3. Sources, not retellings: the pointers the worker reads itself — `memory <slug>`, a commit range `base..head`, `conversation <id> at <entry>` — not a summary of what you know. The brief names where the truth lives, never re-tells it.
 4. Acceptance criteria and the commands that prove them, each marked **core test** (committed: the core path, or a bug that actually happened) or **prove once** (a throwaway test, script or action call, run, shown in the report and deleted).
 5. "Do not expand scope. Report problems instead of working around them."
 6. What to return: conclusions with file:line evidence, not raw dumps.
