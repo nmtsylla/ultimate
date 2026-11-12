@@ -1,4 +1,5 @@
-import type { Context, JsonValue } from '@earendil-works/chord'
+import type { Context } from '@earendil-works/chord/context'
+import type { JsonValue } from '@earendil-works/chord/json'
 import { onCommit } from '../../lib/commits.ts'
 import { awaitWithContext, BACKGROUND_CONTEXT as context } from '@earendil-works/chord/context'
 import { arr, bool, int, lit, obj, opt, str, union } from '@earendil-works/pi-schema'
@@ -62,7 +63,7 @@ import { rewindActions, rewindTask } from './rewind.ts'
 import type { Tree } from './catchup.ts'
 import type { RootEvent } from './types.ts'
 import { compareUrl } from '../../lib/compare.ts'
-import { hasLogin, hostDefaultModel } from '../../lib/agents.ts'
+import { hasLogin, hostDefault } from '../../lib/agents.ts'
 import { admitCompaction } from '../../lib/compaction.ts'
 import { githubRepo } from '../../lib/project-identity.ts'
 
@@ -818,7 +819,7 @@ async function forkBranch(
     input.model ??
     (hasLogin(host.modelRuntime.getAvailableSnapshot(), source)
       ? undefined
-      : await hostDefaultModel(host))
+      : (await hostDefault(host)).model)
   await configure(tx, fork.id, {
     cwd: host.projectRoot,
     ...(model ? { model } : {}),

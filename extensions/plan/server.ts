@@ -146,7 +146,7 @@ export default (host: ExtensionHost) => {
   return defineExtension({
     name: 'plan',
     hooks: [
-      // Pi upstream: @earendil-works/pi-durable@1.5.0 — patched transactional beforeInput hook.
+      // Pi upstream: @earendil-works/pi-durable@1.5.2 — patched transactional beforeInput hook.
       // A lineage branch starts with an empty plan, not the one it forked with: emptied in the commit that places its
       // first input, so its first request never sees the inherited plan. A branch that answered before it was marked
       // started (one made before this hook) keeps its own.
@@ -162,21 +162,27 @@ export default (host: ExtensionHost) => {
       }),
     ],
     sections: [
-      section('plan', async ({ read, conversationId }, context) => {
-        const plan = await read.snapshot(Plan, conversationId, context)
-        const lines = Object.values(plan?.epics ?? {})
-          .filter((epic) => epic.status !== 'done')
-          .flatMap((epic) => [
-            `${epic.key} ${epic.status} ${epic.title}`,
-            ...Object.values(epic.tasks).map(
-              (task) =>
-                `${task.key} ${task.status} ${task.title}` +
-                (task.deps.length ? ` deps:${task.deps.join(',')}` : '') +
-                (task.child !== undefined ? ` child:${task.child}` : ''),
-            ),
-          ])
-        return lines.length ? lines.join('\n') : undefined
-      }),
+      // Empty, not undefined, without open epics: the slot keeps its place, so coming back patches only this section
+      // (Pi re-sends every section when one would land out of order, #573861).
+      section(
+        'plan',
+        async ({ read, conversationId }, context) => {
+          const plan = await read.snapshot(Plan, conversationId, context)
+          const lines = Object.values(plan?.epics ?? {})
+            .filter((epic) => epic.status !== 'done')
+            .flatMap((epic) => [
+              `${epic.key} ${epic.status} ${epic.title}`,
+              ...Object.values(epic.tasks).map(
+                (task) =>
+                  `${task.key} ${task.status} ${task.title}` +
+                  (task.deps.length ? ` deps:${task.deps.join(',')}` : '') +
+                  (task.child !== undefined ? ` child:${task.child}` : ''),
+              ),
+            ])
+          return lines.length ? `<plan>\n${lines.join('\n')}\n</plan>` : ''
+        },
+        { tag: false },
+      ),
     ],
     tools: [
       defineTool({

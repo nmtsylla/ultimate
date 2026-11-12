@@ -15,6 +15,7 @@ import type {
   DocumentContribution,
   EntryRenderer,
   InboxRenderer,
+  InlineCodeRenderer,
   LinkRenderer,
   PanelContribution,
   SlotName,
@@ -113,6 +114,7 @@ const shapes: Record<keyof WebExtension, [Check, string]> = {
     ),
     'an array of { id, title, icon?, component, order?, tab? }',
   ],
+  panelBadges: [objectOf(isComponent), 'an object of panel id → badge component'],
   surfaces: [
     arrayOf(
       fields({
@@ -132,6 +134,7 @@ const shapes: Record<keyof WebExtension, [Check, string]> = {
   inbox: [isComponent, 'an inbox renderer component'],
   composer: [isComponent, 'a composer renderer component'],
   link: [isComponent, 'a link renderer component'],
+  inlineCode: [isComponent, 'an inline code renderer component'],
   codeBlocks: [objectOf(isComponent), 'an object of code block language → component'],
   messageActions: [arrayOf(isComponent), 'an array of message action components'],
   messageDetails: [arrayOf(isComponent), 'an array of message detail components'],
@@ -363,6 +366,17 @@ export function panelItems(records: readonly ExtensionRecord[]): PanelItem[] {
     .toSorted((a, b) => (a.order ?? 0) - (b.order ?? 0))
 }
 
+/** Every badge on panel `id`'s tab, in discovery order. */
+export function panelBadges(
+  records: readonly ExtensionRecord[],
+  id: string,
+): { extension: string; version: number; component: ComponentType }[] {
+  return records.flatMap((record) => {
+    const component = record.extension?.panelBadges?.[id]
+    return component ? [{ extension: record.name, version: record.version, component }] : []
+  })
+}
+
 /**
  * The shown panel, `selected` or else the first with a tab (none while only tabless ones exist), and the tab row: every
  * panel with a tab, plus a tabless one (`tab: false`) while it is shown.
@@ -509,6 +523,16 @@ export function linkRenderers(
 ): { extension: string; version: number; component: LinkRenderer }[] {
   return records.flatMap((record) => {
     const component = record.extension?.link
+    return component ? [{ extension: record.name, version: record.version, component }] : []
+  })
+}
+
+/** Every Markdown inline code renderer in discovery order: each receives the previous rendering as `core`. */
+export function inlineCodeRenderers(
+  records: readonly ExtensionRecord[],
+): { extension: string; version: number; component: InlineCodeRenderer }[] {
+  return records.flatMap((record) => {
+    const component = record.extension?.inlineCode
     return component ? [{ extension: record.name, version: record.version, component }] : []
   })
 }

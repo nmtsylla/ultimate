@@ -22,8 +22,11 @@ export async function status(host: ExtensionHost, since: number, now: number): P
   const tailscale = host.want(TailscaleApi)
   const setup = host.want(SetupApi)
   const goal = host.want(GoalApi)
+  // Update throws while origin has no default branch (lib/fast-forward.ts `standing`), which failed every dashboard poll
+  // until `git remote set-head origin --auto`. The clone is then unknown, so `head` stays out, as with Update off.
+  const updateState = update?.state().catch(() => undefined)
   const [clone, failures, providers, open, warnings, openGoal] = await Promise.all([
-    update?.state(),
+    updateState,
     watchdog?.failures(since),
     health?.providers(),
     host.need(MessagesApi).openQuestions(context),

@@ -25,11 +25,12 @@ import {
   useRegionOpen,
   useUiState,
 } from '../sdk/hooks.ts'
-import { slotItems } from '../sdk/registry.ts'
+import { panelBadges, slotItems } from '../sdk/registry.ts'
 import type { PanelItem } from '../sdk/registry.ts'
 import { overlays, useViewport } from '../sdk/viewport.ts'
 import { ExtensionBoundary, Slot } from './boundary.tsx'
 import { Composer } from './composer.tsx'
+import { setStatusTarget } from './status-target.ts'
 import { IconButton } from './header.tsx'
 import { useSurfaceId } from './surface.ts'
 import { Transcript } from './transcript.tsx'
@@ -38,7 +39,7 @@ import { Transcript } from './transcript.tsx'
  * The bottom line with the `statusline.left` and `statusline.right` slots. On a touch screen of tablet width (an
  * unfolded foldable, a tablet) the page reaches the display's rounded corners, so the line's ends move in and up to
  * clear them. A phone keeps only the items marked `phone` on the line, moved in from the corners, and lists the
- * rest in a ⋯ popover.
+ * rest in a ⋯ popover; the shown conversation's composer puts its `composer.status` line first.
  */
 export function StatusLine() {
   const phone = useViewport() === 'phone'
@@ -50,6 +51,10 @@ export function StatusLine() {
       {phone ? (
         <>
           <div className="flex min-w-0 flex-1 items-center gap-3 overflow-hidden whitespace-nowrap">
+            <div
+              className="flex min-w-0 shrink items-center gap-3 overflow-hidden empty:hidden"
+              ref={setStatusTarget}
+            />
             <Slot name="statusline.left" phone variant="inline" />
             <Slot name="statusline.right" phone variant="inline" />
           </div>
@@ -224,6 +229,15 @@ type Fit = { compact: boolean; overflow: Set<string> }
 
 const key = (panel: PanelItem) => `${panel.extension}:${panel.id}`
 
+/** The badges extensions put on panel `id`'s tab (`panelBadges`), each in its own boundary. */
+function TabBadges({ id }: { id: string }) {
+  return panelBadges(useExtensions(), id).map(({ extension, version, component: Badge }) => (
+    <ExtensionBoundary extension={extension} key={extension} variant="inline" version={version}>
+      <Badge />
+    </ExtensionBoundary>
+  ))
+}
+
 /**
  * A tab per extension panel. When not every label fits, the tabs other than the shown one keep only their icon and
  * name themselves in a tooltip; when even the icons do not fit, the last ones move into a `⋯` menu. The shown tab
@@ -281,9 +295,11 @@ function PanelTabs({ panels, active }: { panels: PanelItem[]; active: PanelItem 
                 <span className={tab} data-measure={`label:${key(panel)}`}>
                   {Icon && <Icon className="size-3.5" />}
                   {panel.title}
+                  <TabBadges id={panel.id} />
                 </span>
                 <span className={tab} data-measure={`icon:${key(panel)}`}>
                   {Icon ? <Icon className="size-3.5" /> : panel.title}
+                  <TabBadges id={panel.id} />
                 </span>
               </span>
             )
@@ -307,6 +323,7 @@ function PanelTabs({ panels, active }: { panels: PanelItem[]; active: PanelItem 
             >
               {Icon && <Icon className="size-3.5" />}
               {!iconOnly && panel.title}
+              <TabBadges id={panel.id} />
             </button>
           )
           return iconOnly ? (
@@ -341,6 +358,7 @@ function PanelTabs({ panels, active }: { panels: PanelItem[]; active: PanelItem 
                   >
                     {Icon && <Icon className="size-3.5" />}
                     {panel.title}
+                    <TabBadges id={panel.id} />
                   </DropdownMenuItem>
                 )
               })}

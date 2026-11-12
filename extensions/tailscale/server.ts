@@ -17,7 +17,7 @@ import type { Status } from './api.ts'
 import { implementAction } from '../../lib/actions.ts'
 import { RetryAction, StatusAction } from './refs.ts'
 interface Serve {
-  TCP?: Record<string, unknown>
+  TCP?: Record<string, { HTTPS?: boolean }>
   Web?: Record<string, { Handlers?: Record<string, { Proxy?: string }> }>
   AllowFunnel?: Record<string, boolean>
 }
@@ -94,7 +94,7 @@ export default function tailscale(host: ExtensionHost) {
   }
   const fail = (state: Status['state'], hint: string) => {
     set({ state, allow: status.allow, hint })
-    host.notice(`Tailscale: ${hint}`)
+    host.notice(`Tailscale: ${hint}`, { diagnostic: true })
   }
   async function withRegistry<T>(use: (value: { ports: Record<string, Entry> }) => Promise<T>) {
     await mkdir(join(host.userHome, '.ultimate'), { recursive: true })
@@ -209,6 +209,12 @@ export default function tailscale(host: ExtensionHost) {
       const localPort = Number(new URL(host.system().process.url).port || '80')
       await withRegistry(async (registry) => {
         const serve = JSON.parse((await command(['serve', 'status', '--json'])).stdout) as Serve
+        // A renamed machine leaves its Serve entries under the old MagicDNS name: unreachable, and read as foreign.
+        // Serving the port again adds it under the current name; those entries stay until `tailscale serve reset`.
+        for (const authority of Object.keys(serve.Web ?? {}))
+          if (authority.slice(0, authority.lastIndexOf(':')) !== dns) delete serve.Web?.[authority]
+        for (const [port, entry] of Object.entries(serve.TCP ?? {}))
+          if (entry.HTTPS && !serve.Web?.[`${dns}:${port}`]) delete serve.TCP?.[port]
         const live = new Set(
           (await host.projects()).flatMap((project) =>
             project.running ? [project.running.url] : [],

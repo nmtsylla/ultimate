@@ -1,5 +1,8 @@
 import type { EntryRecord } from '@earendil-works/pi-durable'
+import { isOpen, isOwed, openQuestion } from '../../lib/message-state.ts'
 import type { MessagesData, Message, Remote } from './refs.ts'
+
+export { isOpen, isOwed, openQuestion }
 
 /** How another project's Ultimate is named; the server says the same in its model text. */
 export const remoteLabel = (remote: Pick<Remote, 'project' | 'machine'>) =>
@@ -12,17 +15,15 @@ export function answeredMessages(messages: Message[], conversation: number, entr
 
 export const emptyMessages: MessagesData = { messages: [], next: 1 }
 /** What waits on the user: each question to the user they have neither answered nor dismissed. */
-export const waitingOnUser = (log: MessagesData) =>
-  log.messages.filter(
-    (message) => message.to === 'user' && message.reply && message.state === 'delivered',
-  ).length
+export const waitingOnUser = (log: MessagesData) => log.messages.filter(openQuestion).length
 
 /**
- * Where a conversation stands, the one state every view shows:
+ * Where a conversation stands, the one state every view shows, first match wins:
  * - `paused`: the host is paused and its run is parked: no task of it executes until Play;
+ * - `waits`: a question waits on the user, even while the conversation or a subagent of it works, since the question
+ *   asks the user to act: for the primary agent (@ultimate) any question open with the user, for any other
+ *   non-subagent conversation one of its own; views that can keep showing the work (a pulsing mark) do;
  * - `working`: it runs, or has input queued;
- * - `waits`: the primary agent (@ultimate) counts every question open with the user; a non-subagent
- *   conversation has one of its own open. This is the state that asks the user to act;
  * - `awaiting`: a conversation that is no subagent asked the primary agent (a branch asking @ultimate) and waits for
  *   the answer, or reported to it and has not heard from it since; a subagent's questions go to its parent, which
  *   answers them in its own run;
@@ -57,16 +58,13 @@ export function conversationState(
 ): ConversationState {
   const { id, kind, runState } = conversation
   if (conversation.parked) return 'paused'
-  if (conversation.busy || runState === 'working' || runState === 'queued') return 'working'
   if (
     kind === 'primary'
       ? waitingOnUser(log) > 0
-      : kind !== 'subagent' &&
-        log.messages.some(
-          (m) => m.from === id && m.to === 'user' && m.reply && m.state === 'delivered',
-        )
+      : kind === 'other' && log.messages.some((m) => m.from === id && openQuestion(m))
   )
     return 'waits'
+  if (conversation.busy || runState === 'working' || runState === 'queued') return 'working'
   if (
     kind !== 'subagent' &&
     awaitsPrimary(id, conversation.primary, log, () => conversation.concludedSince)
@@ -77,11 +75,7 @@ export function conversationState(
   return 'idle'
 }
 
-/**
- * Whether conversation `id` waits on the primary agent: a reply-enabled message to it is open, or its latest report
- * (a routed final answer after it stopped with nothing under way) or a branch's reply to the primary agent's message
- * (`awaits`) came after the primary agent's latest message to it and after it was last concluded.
- */
+/** Whether conversation `id` waits on the primary agent: a reply-enabled message to it is open, or a report is pending. */
 function awaitsPrimary(
   id: number,
   primary: number | undefined,
@@ -89,14 +83,29 @@ function awaitsPrimary(
   concludedSince: (id: number) => number | undefined,
 ) {
   if (primary === undefined) return false
-  let reported = false
-  for (const message of log.messages) {
-    if (message.from === id && message.to === primary) {
-      if (isOpen(message)) return true
-      if ((message.report || message.awaits) && !settled(message, concludedSince)) reported = true
-    } else if (message.from === primary && message.to === id) reported = false
-  }
-  return reported
+  return (
+    log.messages.some((m) => m.from === id && m.to === primary && isOpen(m)) ||
+    pendingReport(log.messages, id, primary, concludedSince) !== undefined
+  )
+}
+
+/**
+ * The report `from` left with `to` that `to` has not taken up: `from`'s latest report (a routed final answer after it
+ * stopped with nothing under way) or reply that awaits `to` (`awaits`), unless `to` messaged `from` since, or `from`
+ * was concluded after sending it. One rule for both sides: `from` shows as awaiting `to`, and `to` owes it.
+ */
+export function pendingReport(
+  messages: readonly Message[],
+  from: number | 'user' | 'remote',
+  to: number | 'user' | 'remote',
+  concludedSince: (id: number) => number | undefined,
+) {
+  let pending: Message | undefined
+  for (const m of messages)
+    if (m.from === from && m.to === to) {
+      if ((m.report || m.awaits) && !settled(m, concludedSince)) pending = m
+    } else if (m.from === to && m.to === from) pending = undefined
+  return pending
 }
 
 /** A state in the sidebar's and System's lower-case words; `waiting` counts what waits on you. */
@@ -110,7 +119,7 @@ export const stateTone: Partial<Record<ConversationState, string>> = {
   paused: 'text-warning',
   working: 'text-brand',
   waits: 'text-amber-700 dark:text-amber-300',
-  awaiting: 'text-amber-700/80 dark:text-amber-300/70',
+  awaiting: 'text-brand',
   done: 'text-success',
   failed: 'text-error',
 }
@@ -306,16 +315,17 @@ export function openMessages(
   id: number,
   concludedSince: (id: number) => number | undefined,
 ) {
-  const reports = new Map<number | 'user' | 'remote', Message>()
-  for (const m of messages)
-    if (m.to === id && m.report && !settled(m, concludedSince)) reports.set(m.from, m)
-    else if (m.from === id) reports.delete(m.to)
+  const reporters = new Set(
+    messages.filter((m) => m.to === id && (m.report || m.awaits)).map((m) => m.from),
+  )
+  const reports = [...reporters].flatMap(
+    (from) => pendingReport(messages, from, id, concludedSince) ?? [],
+  )
   return {
-    waiting: messages.filter((m) => m.from === id && isOpen(m) && m.state === 'delivered'),
-    owed: [
-      ...messages.filter((m) => m.to === id && isOpen(m) && m.state === 'delivered'),
-      ...reports.values(),
-    ].toSorted((a, b) => a.id - b.id),
+    waiting: messages.filter((m) => m.from === id && isOwed(m)),
+    owed: [...messages.filter((m) => m.to === id && isOwed(m)), ...reports].toSorted(
+      (a, b) => a.id - b.id,
+    ),
     delivering: messages.filter((m) => m.from === id && m.state === 'sent'),
   }
 }
@@ -323,10 +333,6 @@ export function openMessages(
 /** Whether a report is settled: its sender was concluded after sending it (or is concluded now). */
 export const settled = (message: Message, concludedSince: (id: number) => number | undefined) =>
   typeof message.from === 'number' && message.at <= (concludedSince(message.from) ?? -Infinity)
-
-/** A reply-enabled message still waiting for its answer. */
-export const isOpen = (message: Message) =>
-  message.reply && (message.state === 'sent' || message.state === 'delivered')
 
 /** Who waits on whom for one message; `yours` is an open question to the user. */
 export function messageStatus(message: Message) {
@@ -356,4 +362,23 @@ export function outgoingState(message: Message | undefined, toUser: boolean, run
   if (message.state === 'sent') return 'sending'
   if (!message.reply) return 'delivered'
   return toUser ? 'awaiting your reply' : 'awaiting reply'
+}
+
+/** Where an open question's card is, against the transcript's view. */
+export type Place = 'above' | 'visible' | 'below'
+
+/** A direction's pointer: how many questions wait that way, and the nearest one, which a click goes to. */
+export type Pointer<T> = { count: number; nearest: T }
+
+/**
+ * The pointers to open questions out of view, from each question's place in transcript order (oldest first): one up
+ * when any is above, aiming at the lowest of them, and one down when any is below, aiming at the highest.
+ */
+export function offscreen<T>(questions: readonly { key: T; place: Place }[]) {
+  const above = questions.filter((q) => q.place === 'above')
+  const below = questions.filter((q) => q.place === 'below')
+  return {
+    up: above.length ? { count: above.length, nearest: above.at(-1)!.key } : undefined,
+    down: below.length ? { count: below.length, nearest: below[0].key } : undefined,
+  } satisfies Record<'up' | 'down', Pointer<T> | undefined>
 }

@@ -1,6 +1,6 @@
 /**
  * The extension SDK: everything a `web.tsx` needs besides components (`@/components/ui/*`, `@/components/ai/*`).
- * The guide is extensions/README.md.
+ * The guide is extensions/README.md; the hooks are in docs/extensions/sdk.md.
  */
 export {
   attention,
@@ -30,6 +30,7 @@ export type {
   DocumentProps,
   EntryRenderer,
   InboxRenderer,
+  InlineCodeRenderer,
   LinkRenderer,
   PanelContribution,
   Point,
@@ -43,7 +44,7 @@ export type {
   UltimateContext,
   WebExtension,
 } from './types.ts'
-/** Building blocks of surfaces; see "Surfaces" in extensions/README.md. */
+/** Building blocks of surfaces; see docs/extensions/surfaces.md. */
 export {
   Conversation,
   Dock,
@@ -57,6 +58,8 @@ export {
 export { ProjectChip, projectTitle, Wordmark } from '../app/titlebar.tsx'
 /** Isolates another extension's component you render, such as a document renderer: it throws into an error card. */
 export { ExtensionBoundary } from '../app/boundary.tsx'
+/** The transcript's and composer's reading column classes, for a card that sits in that column. */
+export { column } from '../app/layout.ts'
 /** The transcript's card: a bordered section with the brand accent on its left edge. */
 export { Card } from '../app/card.tsx'
 /** A card that folds to one quiet line in compact mode, and whether one is open; the reader's choice survives reloads. */
@@ -68,8 +71,8 @@ export { MessageActions } from '../app/message-actions.tsx'
 /** A turn of the user's as the transcript shows a typed one; `text` gives the words a delivered message carries. */
 export { UserText, UserView } from '../app/user-turn.tsx'
 export { useTranscriptScroll } from '../app/transcript.tsx'
-/** Renders with the value another extension provides for your point; see `definePoint`. */
-export { AllProvided, Provided } from '../app/boundary.tsx'
+/** Renders with the values other extensions provide for your point, or through them (`Rendered`); see `definePoint`. */
+export { AllProvided, Provided, Rendered } from '../app/boundary.tsx'
 export { ConversationScope } from './conversation-scope.tsx'
 /** Sends what the composer inside it submits somewhere else, such as a new side chat; see `composer` renderers. */
 export { Composer, ComposerRedirect, fillComposer, insertIntoComposer } from '../app/composer.tsx'
@@ -158,7 +161,7 @@ export type {
   ToolSlot,
   UsageState,
 } from '@earendil-works/pi-durable'
-export type { JsonValue } from '@earendil-works/chord'
+export type { JsonValue } from '@earendil-works/chord/json'
 export type {
   AssistantMessage,
   AuthEvent,

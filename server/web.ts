@@ -8,6 +8,7 @@ import { createReadStream } from 'node:fs'
 import { mkdir, readdir, readFile, realpath, rename, rm, stat } from 'node:fs/promises'
 import type { IncomingMessage, ServerResponse } from 'node:http'
 import { extname, join, relative, resolve, sep } from 'node:path'
+import { inExtensionTests } from '../shared/extension-api.ts'
 import { fileURLToPath } from 'node:url'
 import { createHash } from 'node:crypto'
 import { exec } from '../lib/exec.ts'
@@ -57,6 +58,8 @@ export async function createWeb(options: {
   userHome: string
   home: string
   watch: Watch
+  /** Settles once the checkout and its packages can be read: each build waits for it. */
+  before: () => Promise<unknown>
   /** Open browser pages: with none, a change only marks the bundle stale. */
   pages: () => number
   /** A new bundle is current, or a build started or ended. */
@@ -239,6 +242,7 @@ export async function createWeb(options: {
       try {
         await mkdir(folder, { recursive: true })
         while (stale && !closing.signal.aborted) {
+          await options.before()
           stale = false
           changedFiles = [...pending]
           pending = new Set()
@@ -269,8 +273,10 @@ export async function createWeb(options: {
     if (options.pages() > 0) timer = setTimeout(() => void update(), 150)
   }
   const inside = (file: string, root: string) => file === root || file.startsWith(root + sep)
+  const tests = (file: string) =>
+    roots.some((root) => inside(file, root) && inExtensionTests(relative(root, file)))
   const onChange = (file: string) => {
-    if (file.includes(`${sep}node_modules${sep}`)) return
+    if (file.includes(`${sep}node_modules${sep}`) || tests(file)) return
     if (inside(file, webRoot) || always.includes(file) || inputs.has(file)) return touched(file)
     if (roots.some((root) => inside(file, root)))
       void realpath(file).then(
@@ -280,7 +286,7 @@ export async function createWeb(options: {
       )
   }
   const onStructure = (file: string) => {
-    if (file.includes(`${sep}node_modules${sep}`)) return
+    if (file.includes(`${sep}node_modules${sep}`) || tests(file)) return
     if (inside(file, webRoot) || roots.some((root) => inside(file, root))) touched(file)
   }
   const structure = ['add', 'unlink', 'addDir', 'unlinkDir'] as const

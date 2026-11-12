@@ -17,6 +17,7 @@ import {
   api,
   Card,
   cn,
+  column,
   ComposerRedirect,
   Conversation,
   ConversationScope,
@@ -116,11 +117,11 @@ function ModeSwitch({ on, onToggle }: { on: boolean; onToggle: () => void }) {
 function SideComposer({ core, dock }: { core: ReactNode; dock?: boolean }) {
   const id = useConversation((conversation) => conversation.id)
   const { main, index } = useMain()
-  const on = useSideMode()
+  // Keep the editor in the same tree position while the standing conversation's document arrives.
+  const active = id !== undefined && id === main && !dock
+  const on = useSideMode() && active
   const [front, setFront] = useFront()
-  const shown = frontSide(front, index)
-  // A side chat's own composer, and @ultimate's in a docked region, stay as they are: one level only.
-  if (id === undefined || id !== main || dock) return core
+  const shown = active ? frontSide(front, index) : undefined
   const parked = openSides(index).filter((item) => item.id !== shown?.id)
   const target: ComposerTarget | undefined = on
     ? {
@@ -133,7 +134,7 @@ function SideComposer({ core, dock }: { core: ReactNode; dock?: boolean }) {
       }
     : undefined
   const onKeyDown = (event: KeyboardEvent<HTMLDivElement>) => {
-    if (!(event.target instanceof HTMLTextAreaElement)) return
+    if (!active || !(event.target instanceof HTMLTextAreaElement)) return
     const popup = event.target.getAttribute('aria-expanded') === 'true'
     const key = { ...event, isComposing: event.nativeEvent.isComposing }
     if (!togglesSideMode(key, { conversation: id, ultimate: main, popup })) return
@@ -141,10 +142,17 @@ function SideComposer({ core, dock }: { core: ReactNode; dock?: boolean }) {
     setSide(!on)
   }
   return (
-    <div className="relative" data-side-mode={on ? 'side' : 'normal'} onKeyDownCapture={onKeyDown}>
+    <div
+      className="relative"
+      data-side-mode={active ? (on ? 'side' : 'normal') : undefined}
+      onKeyDownCapture={onKeyDown}
+    >
       {/* Covered by a side chat in front, main's composer and its controls take no focus, typing or clicks. */}
-      <div data-main-composer inert={!!shown}>
-        <div className="mx-auto flex w-full max-w-[46rem] items-center justify-between gap-2 px-3 pb-1.5 sm:px-6">
+      <div data-main-composer={active || undefined} inert={!!shown}>
+        <div
+          className={cn(column(), 'flex items-center justify-between gap-2 pb-1.5')}
+          hidden={!active}
+        >
           <div
             className="flex min-w-0 items-center gap-3 font-mono text-[11px] text-muted-foreground/70"
             data-ui="side-chat-hint"
@@ -201,7 +209,7 @@ function SideComposer({ core, dock }: { core: ReactNode; dock?: boolean }) {
 function MainBlocked({ onBack }: { onBack: () => void }) {
   return (
     <div className="absolute inset-0 z-10 flex items-center bg-background/70 backdrop-blur-[1px]">
-      <div className="mx-auto w-full max-w-[46rem] px-3 sm:px-6">
+      <div className={column()}>
         <div className="flex w-fit items-center gap-3 rounded-lg border border-border bg-card px-3.5 py-2 font-mono text-[11.5px] text-muted-foreground shadow-sm">
           <GitForkIcon className="size-3.5 text-brand" />
           <span>Typing goes to the side chat</span>
@@ -257,10 +265,14 @@ function Stage() {
       (child): child is HTMLElement => child instanceof HTMLElement && !child.contains(ref.current),
     )
     const still = reduced()
-    const column = Math.min(736, width)
+    // The column as laid out, so a `--reading-width` set by the user moves it to the same resting place.
+    const reading = layers
+      .map((layer) => layer.querySelector<HTMLElement>('[data-ui="transcript"]'))
+      .find(Boolean)
+    const columnWidth = reading?.offsetWidth ?? width
     const scale = phone ? 0.92 : 0.88
     // Main's column comes to rest near the region's left edge, beside the sheet.
-    const shift = phone ? 0 : Math.min(0, 24 - (width / 2 - (column / 2) * scale))
+    const shift = phone ? 0 : Math.min(0, 24 - (width / 2 - (columnWidth / 2) * scale))
     for (const layer of layers) {
       layer.style.transition = still
         ? `opacity ${duration}ms ease`

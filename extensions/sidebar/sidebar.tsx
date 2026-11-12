@@ -182,8 +182,8 @@ function workingByTop(conversations: readonly ConversationSummary[]) {
 const byInput = (a: ConversationSummary, b: ConversationSummary) =>
   (b.inputAt ?? 0) - (a.inputAt ?? 0) || b.id - a.id
 
-const pinned = (conversation: ConversationSummary) =>
-  conversation.label === 'lander' ||
+const pinned = (conversation: ConversationSummary, landerId?: number) =>
+  (conversation.label === 'lander' && (landerId === undefined || conversation.id === landerId)) ||
   (conversation.label === 'agent' &&
     conversation.parentConversationId === undefined &&
     conversation.ownerTaskId === undefined)
@@ -245,6 +245,11 @@ function Tree({
   const concludedSince = useConcludedSince()
   const [seen] = useSidebarState<Record<string, number>>('seen', {})
   const shownTop = topOf(shownId, conversations)
+  const workspaceIndex = useWorkspaceIndex()
+  // The standing agents the project names: `{ ultimate: 42 }`. The lander is not one of them, so its row is the
+  // conversation the workspaces index knows as a lander; an older conversation that merely carries the label is
+  // history, and must neither render a second pinned row nor fall into the list.
+  const standingIds = useDocOf(1, StandingDoc)
   const hiddenIds = hiddenConversationIds(conversations, concludedIds)
   const roots = new Set(useRoots())
   const summary =
@@ -254,19 +259,29 @@ function Tree({
   const [expanded, setExpanded] = useSidebarState<number[]>('expanded', [])
   const working = workingByTop(conversations)
   const topLevel = topLevelRows(conversations, new Set(unlisted.flatMap((set) => [...set])))
+  const landerIds = topLevel.filter((conversation) => conversation.label === 'lander')
+  const knownLander = Object.values(workspaceIndex.landerConversations)
+    .concat(standingIds?.lander ?? [])
+    .find((id) => landerIds.some((conversation) => conversation.id === id))
+  const landerId = knownLander ?? landerIds.at(-1)?.id
+  const strayLanders = new Set(
+    landerIds
+      .filter((conversation) => landerId !== undefined && conversation.id !== landerId)
+      .map((conversation) => conversation.id),
+  )
   // @ultimate first, then the lander and other standing agents: pinned above the rest and never concluded.
-  const standingIds = useDocOf(1, StandingDoc)
   const ultimateId = standingIds?.ultimate
   const ultimate = topLevel.find((conversation) => conversation.id === ultimateId)
   const agents = topLevel
-    .filter((conversation) => pinned(conversation) && conversation.id !== ultimateId)
+    .filter((conversation) => pinned(conversation, landerId) && conversation.id !== ultimateId)
     .toSorted((a, b) => Number(b.label === 'lander') - Number(a.label === 'lander') || a.id - b.id)
-  const workspaceIndex = useWorkspaceIndex()
+  const visible = (conversation: ConversationSummary) =>
+    !pinned(conversation, landerId) && !strayLanders.has(conversation.id)
   const listed = topLevel
-    .filter((conversation) => !pinned(conversation) && !hiddenIds.has(conversation.id))
+    .filter((conversation) => visible(conversation) && !hiddenIds.has(conversation.id))
     .toSorted(byInput)
   const hidden = topLevel
-    .filter((conversation) => !pinned(conversation) && hiddenIds.has(conversation.id))
+    .filter((conversation) => visible(conversation) && hiddenIds.has(conversation.id))
     .toSorted(byInput)
   const branchesBySource = new Map<number, ConversationSummary[]>()
   for (const conversation of topLevel.toSorted(byInput)) {
@@ -292,7 +307,9 @@ function Tree({
     .toSorted(byInput)
   const rest = listed.filter(
     (conversation) =>
-      !roots.has(conversation.id) && !pinned(conversation) && !openBranches.includes(conversation),
+      !roots.has(conversation.id) &&
+      !pinned(conversation, landerId) &&
+      !openBranches.includes(conversation),
   )
   // The rest, with branches nested under their source when it is there too.
   const earlier = rest.filter(
@@ -378,8 +395,13 @@ function Tree({
         conversation={conversation}
         key={conversation?.id ?? 'ultimate'}
         name={name}
+        // Its mark keeps pulsing while it works, also when its word says what waits on you.
         presence={
-          state === 'working' || landing ? 'working' : state === 'waits' ? 'waiting' : 'idle'
+          state === 'working' || landing || (busy && state === 'waits')
+            ? 'working'
+            : state === 'waits'
+              ? 'waiting'
+              : 'idle'
         }
         onOpen={() =>
           conversation && !isUltimate
@@ -395,7 +417,8 @@ function Tree({
             {state === 'working' && conversation ? (
               <StandingPhase id={conversation.id} />
             ) : (
-              <span className={cn('shrink-0', stateTone[state])}>{stateWord(state, waiting)}</span>
+              // No count: the Inbox row under it carries how many wait on the user.
+              <span className={cn('shrink-0', stateTone[state])}>{stateWord(state)}</span>
             )}
             {latest > 0 && (
               <span
@@ -411,7 +434,7 @@ function Tree({
     )
   }
   const row = (conversation: ConversationSummary, shown = conversation.id === shownTop?.id) => {
-    if (pinned(conversation)) return standingRow(conversation)
+    if (pinned(conversation, landerId)) return standingRow(conversation)
     if (roots.has(conversation.id))
       return (
         <MemoryRow
@@ -433,8 +456,11 @@ function Tree({
       },
       log,
     )
-    // Queued input counts as working too; subagents working below it say so.
-    const state = working.get(conversation.id) ?? (derived === 'working' ? 'self' : undefined)
+    // Queued input counts as working too; subagents working below it say so. A question to the user outranks both.
+    const state =
+      derived === 'waits'
+        ? undefined
+        : (working.get(conversation.id) ?? (derived === 'working' ? 'self' : undefined))
     return (
       <Row
         activity={overview[conversation.id]?.activity}

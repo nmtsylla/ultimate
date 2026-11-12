@@ -22,7 +22,7 @@ import { readSecret, secretMetadata } from '../../lib/secrets.ts'
 import type { ExtensionHost } from '../../server/extensions.ts'
 import { ConversationsApi } from '../conversations/api.ts'
 import { HealthApi } from '../health/api.ts'
-import type { MemoryDoc, RootsDoc } from '../lineage/refs.ts'
+import type { MemoryDoc, RootsDoc, TallyDoc } from '../lineage/refs.ts'
 import { Standing } from '../subagents/api.ts'
 import { TailscaleApi } from '../tailscale/api.ts'
 import { SetupApi } from './api.ts'
@@ -60,7 +60,24 @@ type CheckHost = Pick<
 const configured = (host: Pick<CheckHost, 'modelRuntime'>, provider: string) =>
   host.modelRuntime.getProviderAuthStatus(provider).configured
 
-async function summaryArea(host: CheckHost): Promise<SetupIssue> {
+/** Whether any model has a login here. Without one nothing runs, so that is the only model-related warning. */
+const loggedIn = (host: Pick<CheckHost, 'modelRuntime'>) =>
+  host.modelRuntime.getAvailableSnapshot().length > 0
+
+function loginArea(host: CheckHost): SetupIssue | undefined {
+  if (loggedIn(host)) return undefined
+  return {
+    area: 'Login',
+    status: 'warn',
+    summary: 'no model provider logged in',
+    impact: 'Nothing can run until you log in to a provider or pick a model.',
+    fix: LOGIN,
+  }
+}
+
+async function summaryArea(host: CheckHost): Promise<SetupIssue | undefined> {
+  // Before any login the Login row says it all.
+  if (!loggedIn(host)) return undefined
   const status = await host.need(ConversationsApi).summaryModelStatus()
   const fix = { label: 'Choose', command: 'conversations.summary-model' }
   const uses = 'Titles, codemode step lines and question cards'
@@ -106,7 +123,7 @@ async function agentsArea(host: CheckHost): Promise<SetupIssue[]> {
   const issues: SetupIssue[] = []
   const missing = new Map<string, string[]>()
   for (const definition of definitions)
-    if (definition.model && !configured(host, definition.model.provider))
+    if (loggedIn(host) && definition.model && !configured(host, definition.model.provider))
       missing.set(definition.model.provider, [
         ...(missing.get(definition.model.provider) ?? []),
         definition.name,
@@ -134,7 +151,7 @@ async function agentsArea(host: CheckHost): Promise<SetupIssue[]> {
       impact:
         'It no longer follows updates to the built-in instructions. Make it an overlay: name, addTools, the settings you change and your additions (docs/subagents.md).',
     })
-  if (!issues.length)
+  if (!issues.length && loggedIn(host))
     issues.push({ area: 'Agent models', status: 'ok', summary: 'every pinned model has a login' })
   return issues
 }
@@ -167,24 +184,46 @@ async function providersArea(host: CheckHost): Promise<SetupIssue | undefined> {
   }
 }
 
-async function secretsArea(host: CheckHost): Promise<SetupIssue> {
+/**
+ * Missing secrets of enabled extensions. One the user turned on (in settings or a project folder) warns; a built-in
+ * that is on by default only offers its key, since the rest of Ultimate works without it (voice without
+ * `OPENAI_API_KEY`).
+ */
+async function secretsArea(host: CheckHost): Promise<SetupIssue[]> {
   const set = new Set((await secretMetadata(host.userHome)).map((secret) => secret.name))
-  const missing = new Map<string, string[]>()
+  const chosen = new Map<string, string[]>()
+  const optional = new Map<string, string[]>()
   for (const extension of host.extensions()) {
     if (!extension.enabled || !extension.server || extension.server.error) continue
+    const missing = extension.layer === 'default' ? optional : chosen
     for (const { name, provider } of extension.server.secrets ?? [])
       if (!set.has(name) && !(provider && configured(host, provider)))
         missing.set(name, [...(missing.get(name) ?? []), extension.name])
   }
-  if (!missing.size) return { area: 'Secrets', status: 'ok', summary: 'all set' }
-  const names = [...missing.keys()]
-  return {
-    area: 'Secrets',
-    status: 'warn',
-    summary: `${names.join(', ')} missing`,
-    impact: `Without it, ${[...new Set([...missing.values()].flat())].join(', ')} can't work.`,
-    fix: { label: 'Add', secret: names[0] },
+  for (const name of chosen.keys()) optional.delete(name)
+  if (!chosen.size && !optional.size) return [{ area: 'Secrets', status: 'ok', summary: 'all set' }]
+  const users = (missing: Map<string, string[]>) => [...new Set([...missing.values()].flat())]
+  const issues: SetupIssue[] = []
+  if (chosen.size) {
+    const names = [...chosen.keys()]
+    issues.push({
+      area: 'Secrets',
+      status: 'warn',
+      summary: `${names.join(', ')} missing`,
+      impact: `Without it, ${users(chosen).join(', ')} can't work.`,
+      fix: { label: 'Add', secret: names[0] },
+    })
   }
+  if (optional.size) {
+    const names = [...optional.keys()]
+    issues.push({
+      area: 'Secrets',
+      status: 'info',
+      summary: `optional: ${names.join(', ')} for ${users(optional).join(', ')}`,
+      fix: { label: 'Add', secret: names[0] },
+    })
+  }
+  return issues
 }
 
 function extensionsArea(host: CheckHost): SetupIssue | undefined {
@@ -291,16 +330,25 @@ const snapshots =
   (doc, id) =>
     host.harness().snapshot(doc, id, BACKGROUND_CONTEXT)
 
-/** Listed roots without a memory: their branches start from the whole tally instead of a memory brief. */
+/**
+ * Listed roots that have branched but have no memory: their branches start from the whole tally instead of a memory
+ * brief. A root that never branched (a fresh project, where onboarding writes the first memories) has nothing to warn
+ * about yet.
+ */
 async function memoryArea(host: CheckHost, read: ReadDoc): Promise<SetupIssue | undefined> {
   const rootsDoc = host.doc('lineage.roots')
   const memoryDoc = host.doc('lineage.memory')
-  if (!rootsDoc || !memoryDoc) return undefined
+  const tallyDoc = host.doc('lineage.tally')
+  if (!rootsDoc || !memoryDoc || !tallyDoc) return undefined
   const listed = (await read(rootsDoc, ROOT_CONVERSATION_ID)) as
     | (typeof RootsDoc)['value']
     | undefined
   const empty: number[] = []
   for (const root of listed?.roots ?? []) {
+    const tally = (await read(tallyDoc, root as ConversationId)) as
+      | (typeof TallyDoc)['value']
+      | undefined
+    if (tally?.since === undefined) continue
     const doc = (await read(memoryDoc, root as ConversationId)) as
       | (typeof MemoryDoc)['value']
       | undefined
@@ -325,6 +373,7 @@ export async function check(
   const areas = await Promise.all(
     (
       [
+        loginArea,
         summaryArea,
         agentsArea,
         providersArea,
@@ -418,7 +467,7 @@ export default function setup(host: ExtensionHost) {
     name: 'setup',
     hooks: [
       hook(GenerationTask, {
-        // Pi upstream: @earendil-works/pi-durable@1.5.0 — patched transactional beforeInput hook.
+        // Pi upstream: @earendil-works/pi-durable@1.5.2 — patched transactional beforeInput hook.
         // Only the primary agent hears about setup, and only when its warnings change: a per-input note, never a
         // system-prompt section, keeps the prompt cached.
         beforeInput: async (_input, { tx, conversationId }) => {

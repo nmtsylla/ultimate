@@ -134,14 +134,15 @@ it.concurrent('ships a resident Ultimate definition with valid tools; standing a
   const rootTools = (await f.server.root.agent(context)).tools.map((tool) => tool.name)
   expect(rootTools).not.toContain('branch')
   expect(rootTools).not.toContain('debug')
-  expect(
-    (await f.server.harness.snapshot(Standing, ROOT_CONVERSATION_ID, context))?.dice,
-  ).toBeUndefined()
+  // A resident definition has its conversation from the open, before anything addresses it.
+  const opened = (await f.server.harness.snapshot(Standing, ROOT_CONVERSATION_ID, context))?.dice
+  expect(opened).toEqual(expect.any(Number))
   await ask(f.server, ultimate, 'SEND ' + JSON.stringify({ to: '@dice', text: 'Roll' }))
   await until(async () =>
     (await entries(f.server, ultimate)).some((entry) => entry.kind === 'board.reply'),
   )
   const dice = (await f.server.harness.snapshot(Standing, ROOT_CONVERSATION_ID, context))!.dice
+  expect(dice).toBe(opened)
   expect((await entries(f.server, dice)).some((entry) => entry.kind === 'board.message')).toBe(true)
   expect(f.requests.some((text) => text.startsWith(`Message from #${ultimate} (@ultimate):`))).toBe(
     true,
@@ -517,6 +518,14 @@ it.concurrent('keeps a model whose login check is pending or failed, and never t
   expect(await model()).toEqual({ provider: 'openrouter', modelId: dead })
   expect(await fallbacks()).toEqual([])
   check.mockRestore()
+  // #534457/543286: with the claude-code provider not loaded during an outage, its login type was unknown, so the
+  // subscription rule did not apply and a conversation moved to a pay-per-token provider. A provider that is not
+  // registered is no evidence of a missing login: the model stays and nothing is said.
+  const unloaded = { provider: 'not-loaded', modelId: 'faux-1' }
+  await f.server.harness.commit((tx) => configure(tx, dice, { model: unloaded }), context)
+  await ask(f.server, dice, 'unloaded')
+  expect(await model()).toEqual(unloaded)
+  expect(await fallbacks()).toEqual([])
   // A subscription whose login is really gone takes neither the pay-per-token default nor any first model in the
   // list: it keeps its model and asks once.
   const subscription = { provider: 'openai-codex', modelId: 'gpt-6.1-sol' }

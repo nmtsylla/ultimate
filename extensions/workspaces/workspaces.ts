@@ -1,7 +1,7 @@
 import { createHash } from 'node:crypto'
 import { lstat, mkdir, readdir, realpath, rm } from 'node:fs/promises'
 import { isAbsolute, join, relative, sep } from 'node:path'
-import type { Context } from '@earendil-works/chord'
+import type { Context } from '@earendil-works/chord/context'
 import {
   configure,
   defineDoc,
@@ -13,6 +13,7 @@ import {
 import type { ConversationId, Cursor, TaskId, Tx } from '@earendil-works/pi-durable'
 import { exec } from '../../lib/exec.ts'
 import { git, isolatable } from '../../lib/git.ts'
+import { needsRestart as restartNeeded } from '../../lib/layers.ts'
 import type { ExtensionHost } from '../../server/extensions.ts'
 import { ConversationsApi } from '../conversations/api.ts'
 import { Branches } from './api.ts'
@@ -599,6 +600,9 @@ export function workspaces(host: Host) {
       if (signal?.aborted) break
       const record = await get(id, context)
       if (!record) continue
+      // A checkout whose source is gone cannot be freed: the project was moved, so nothing of that worktree exists to
+      // remove or to inspect. Read the source as a plain directory, which says so without spawning Git in it.
+      if (!(await lstat(record.source).catch(() => undefined))) continue
       await serial(record.source, async () => {
         if (signal?.aborted) return
         const workspace = (await get(id, context))!
@@ -773,7 +777,7 @@ export function workspaces(host: Host) {
           })
         const needsRestart =
           (await realpath(source)) === (await realpath(host.ultimateRoot)) &&
-          files.some(({ path }) => /^(server|shared)\//.test(path))
+          restartNeeded(files.map((file) => file.path))
         await git(source, 'merge', '--ff-only', tip)
         result = {
           text: `Landed commits:\n${commits.join('\n')}\nChanged files:\n${files.map((file) => `${file.path} +${file.added} -${file.removed}`).join('\n')}${needsRestart ? '\nNeeds restart.' : ''}`,

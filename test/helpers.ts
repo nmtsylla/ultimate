@@ -87,9 +87,7 @@ export function cleanEnv(extra: NodeJS.ProcessEnv = {}) {
     ...extra,
   }
 }
-// Tests run without the supervisor's ULTIMATE_* variables: removed once, not stubbed per test, so concurrent tests never
-// see them come back. Stubs a test leaves behind end with its file; stubbing restores to unset.
-for (const key of Object.keys(process.env)) if (key.startsWith('ULTIMATE_')) delete process.env[key]
+// Stubs a test leaves behind end with its file; stubbing restores to unset (test/setup.ts removed ULTIMATE_*).
 afterAll(() => vi.unstubAllEnvs())
 
 // Every temp() directory is removed once the test file finishes, so runs do not fill the tmpfs.
@@ -140,8 +138,14 @@ export async function sourceCopy(parent: string) {
   const root = await temp('source-', parent)
   await cp(resolve('.'), root, {
     recursive: true,
-    filter: (path) =>
-      !['.git', 'node_modules'].includes(path.slice(resolve('.').length + 1).split('/')[0]),
+    filter: (path) => {
+      const relative = path.slice(resolve('.').length + 1)
+      // Project automations are real machine work, not fixture setup: #8364's sync-upstream watcher otherwise runs
+      // inside every trusted source copy and races lineage/model assertions. Tests create their own automation fixtures.
+      if (relative === '.ultimate/automations' || relative.startsWith('.ultimate/automations/'))
+        return false
+      return !['.git', 'node_modules'].includes(relative.split('/')[0])
+    },
   })
   await linkDependencies(root)
   const config = join(root, 'vite.config.ts')

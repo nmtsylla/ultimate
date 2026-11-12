@@ -31,7 +31,9 @@ import {
   useStore,
 } from '../sdk/hooks.ts'
 import { isMac } from '../sdk/keys.ts'
-import { touchKeyboard } from '../sdk/viewport.ts'
+import { touchKeyboard, useViewport } from '../sdk/viewport.ts'
+import { createPortal } from 'react-dom'
+import { useStatusTarget } from './status-target.ts'
 import { imageMimeTypes, type ModelsResponse } from '../../../shared/protocol.ts'
 import { ExtensionBoundary, Provided, Slot } from './boundary.tsx'
 import { composerRenderers, inboxRenderer } from '../sdk/registry.ts'
@@ -53,7 +55,7 @@ const alt = isMac ? '⌥' : 'Alt'
 
 function blockedBy(agent: AgentState, models: ModelsResponse | undefined): string | undefined {
   const model = agent.model
-  if (!model) return 'No model configured. Log in with pi, or pick a model.'
+  if (!model) return `No model yet: ${isMac ? '⌘K' : 'Ctrl+K'} → Log in`
   const found = models?.models.find(
     (candidate) => candidate.provider === model.provider && candidate.id === model.modelId,
   )
@@ -160,9 +162,13 @@ export interface ComposerTarget {
   send: (text: string) => Promise<unknown>
 }
 const ComposerTargetContext = createContext<ComposerTarget | undefined>(undefined)
-/** Redirects the composer inside it to `to` while it is set; a composer renderer wraps `core` in it. */
+/**
+ * Redirects the composer inside it to `to` while it is set; a composer renderer wraps `core` in it. Unset, it keeps an
+ * outer redirect, so a renderer that only sometimes redirects (side chat) does not hide another renderer's.
+ */
 export function ComposerRedirect({ to, children }: { to?: ComposerTarget; children: ReactNode }) {
-  return <ComposerTargetContext value={to}>{children}</ComposerTargetContext>
+  const outer = useContext(ComposerTargetContext)
+  return <ComposerTargetContext value={to ?? outer}>{children}</ComposerTargetContext>
 }
 
 export function Composer({ dock }: { dock?: boolean }) {
@@ -293,6 +299,10 @@ function ComposerEditor({ dock, upload }: { dock?: boolean; upload: Upload }) {
   const queued = inbox.filter((item) => item.mode !== 'write')
   const scoped = useContext(ConversationIdContext)
   const target = useContext(ComposerTargetContext)
+  // On a phone the shown conversation's status line folds into the status line: one row of chrome less.
+  const statusTarget = useStatusTarget()
+  const phone = useViewport() === 'phone'
+  const foldStatus = phone && scoped === undefined && !dock ? statusTarget : null
   const draft = getDraft(id)
   const { text, images, files, error, sending } = useSyncExternalStore(draft.subscribe, draft.get)
   const setError = (message: string | undefined) => draft.set({ error: message })
@@ -575,9 +585,13 @@ function ComposerEditor({ dock, upload }: { dock?: boolean; upload: Upload }) {
           </div>
         </PromptInputFooter>
       </PromptInput>
-      <div className="flex items-center gap-3 overflow-hidden pt-1.5 font-mono text-[11px] whitespace-nowrap text-muted-foreground empty:hidden">
-        <Slot name="composer.status" variant="inline" />
-      </div>
+      {foldStatus ? (
+        createPortal(<Slot name="composer.status" variant="inline" />, foldStatus)
+      ) : (
+        <div className="flex items-center gap-3 overflow-hidden pt-1.5 font-mono text-[11px] whitespace-nowrap text-muted-foreground empty:hidden">
+          <Slot name="composer.status" variant="inline" />
+        </div>
+      )}
     </div>
   )
 }
