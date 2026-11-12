@@ -61,12 +61,14 @@ async function fixture(project: JsonObject = {}) {
   let opened: OpenHost | undefined
   const events = eventHost(() => opened!.harness, 'prewalk')
   const notices: string[] = []
+  const openers: (() => Promise<void>)[] = []
   const actionHost = {
     ...prepared,
     harness: () => opened!.harness,
     projectSettings: async () => project,
     emit: events.emit,
     react: events.react,
+    onOpen: (callback: () => Promise<void>) => openers.push(callback),
     doc: (kind: string) => (kind === Plan.definition.kind ? Plan : events.doc(kind)),
     notice: (message: string) => notices.push(message),
   } as unknown as ExtensionHost
@@ -88,7 +90,11 @@ async function fixture(project: JsonObject = {}) {
   }
   prepared.faux!.setResponses([route])
   opened = await prepared.open()
-  await events.start()
+  const reload = async () => {
+    for (const callback of openers) await callback()
+    await events.start()
+  }
+  await reload()
   await opened.root.configure({ model: strong, thinkingLevel: 'high' }, context)
   const call = async (name: string, args: JsonObject) => {
     const submission = await opened.root.submit(
@@ -117,6 +123,7 @@ async function fixture(project: JsonObject = {}) {
     notices,
     requested,
     actionHost,
+    reload,
     emit: events.emit,
     settled: events.settled,
   }
@@ -243,6 +250,7 @@ it('arms only new branch events when enabled, with project target over user targ
       JSON.stringify({ prewalk: { enabled: true, target: 'missing/model' } }),
     )
     project.prewalk = { target: 'fast' }
+    await f.reload()
     const enabled = await branch('Enabled for this new branch')
     await until(
       async () => (await f.opened.harness.snapshot(Prewalk, enabled, context))?.armed !== undefined,

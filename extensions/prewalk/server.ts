@@ -266,23 +266,29 @@ async function finish(api: ToolExecutionApi, state: PrewalkState, ctx: Context) 
   return api.memo('result', reply(state), ctx)
 }
 
+export const reloadOnSettings = true
+
 export default function prewalk(host: ExtensionHost) {
-  host.react(
-    'arm-branches',
-    [Branched],
-    async (tx, event) => {
-      try {
-        const target = await automaticTarget(host)
-        if (target === undefined) return
-        await armTx(host, tx, event.data.id as ConversationId, target)
-      } catch (error) {
-        // A bad or unavailable automatic target leaves the branch usable; explicit arm still reports its own error.
-        host.notice(`Could not arm prewalk for #${event.data.id}: ${String(error)}`)
-      }
-    },
-    // Existing branches must not become armed when the extension or setting is first enabled.
-    { from: 'now' },
-  )
+  host.onOpen(async () => {
+    // #8088: disabled prewalk has no branch reactor; even its cursor commit delayed lineage's title watcher.
+    if ((await automaticTarget(host)) === undefined) return
+    host.react(
+      'arm-branches',
+      [Branched],
+      async (tx, event) => {
+        try {
+          const target = await automaticTarget(host)
+          if (target === undefined) return
+          await armTx(host, tx, event.data.id as ConversationId, target)
+        } catch (error) {
+          // A bad or unavailable automatic target leaves the branch usable; explicit arm still reports its own error.
+          host.notice(`Could not arm prewalk for #${event.data.id}: ${String(error)}`)
+        }
+      },
+      // Existing branches must not become armed when the extension or setting is first enabled.
+      { from: 'now' },
+    )
+  })
   return defineExtension({
     name: 'prewalk',
     hooks: [
