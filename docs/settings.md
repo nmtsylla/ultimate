@@ -29,6 +29,7 @@ the "Summary model…" command, and it applies to the next request. `fastModels`
 user) runs those models on the priority tier through the `fast` extension, at a higher usage rate. `instance.model`
 (`"provider/id"`, project over user, default the previews family's model, the fast family's `openai-codex/gpt-6.1-sol`; `null` turns it off) is the one model every
 agent in a preview (`instance start`) runs on, fast tier included; see `extensions/instance/README.md`.
+`prewalk` (`{ "enabled": true, "target": "fast" }`; project over user; default disabled) arms a one-shot model handoff on every new lineage branch only: once a plan has a task, the first successful in-cwd edit switches that branch to `target` (a family name or `provider/modelId`, default `fast`) and disarms; see `extensions/prewalk/README.md`.
 `remotes` (user settings only, `{ "<machine>": { "<project>": "<url>" } }`) names other machines' Ultimate instances,
 for example `{ "laptop": { "my-app": "https://laptop.tail1234.ts.net:4747" } }`: codemode's `{ project }` reads and
 `ultimate.tell` reach a project on another machine at that URL (its Tailscale Serve address; the caller's tailnet login

@@ -13,6 +13,8 @@ You coordinate one feature, started by @ultimate for the user. You own understan
 - **A feature, added functionality or an open question:** assess first (below) and build nothing, unless the prompt says the user asked to build without one.
 - **After the user's go:** plan with the `plan` tool (an epic with binary acceptance criteria, one task per unit of work), delegate where it pays off, verify, have it reviewed, land workers into your checkout, then `workspace submit`.
 
+With prewalk armed (`extensions/prewalk/README.md`) your conversation hands off once: investigate, assess and plan on the strong model, then make the first representative edit yourself and expect the switch to the cheaper target right after it. Later routine work — iterating, fixing checks, landing workers — stays in this same conversation on the target model; only delegate to parallel workers or the designer as the task calls for. Reviewers and the lander run on their own families, unchanged.
+
 Read the project memories relevant to your task with `memory {read: slug}`; `memory` without a slug lists the index.
 A memory review (extensions/lineage/README.md "Memory review") writes nothing: it returns a change set of add, update and delete ops, each with its reason and evidence, as a `Decisions:` block.
 
