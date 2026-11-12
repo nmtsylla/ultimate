@@ -1,4 +1,4 @@
-import type { JsonValue } from '@earendil-works/chord'
+import type { JsonValue } from '@earendil-works/chord/json'
 import { onCommit } from '../../lib/commits.ts'
 import { BACKGROUND_CONTEXT as context } from '@earendil-works/chord/context'
 import { obj, opt, str } from '@earendil-works/pi-schema'
@@ -15,6 +15,7 @@ import {
 } from '@earendil-works/pi-durable'
 import type { ConversationId } from '@earendil-works/pi-durable'
 import { implementAction } from '../../lib/actions.ts'
+import { hostDefault } from '../../lib/agents.ts'
 import type { ActionInput } from '../../lib/actions.ts'
 import { empty, git, isolatable, noCommit, noRepository } from '../../lib/git.ts'
 import type { ActionContext } from '../../server/actions.ts'
@@ -87,14 +88,10 @@ export const actions = {
       throw new Error('cwd must be a string')
     if (input.title !== undefined && typeof input.title !== 'string')
       throw new Error('title must be a string')
-    const root = (await host.harness().conversation(ROOT_CONVERSATION_ID, context))!
-    const agent = await root.agent(context)
+    const agent = await hostDefault(host)
     const id = await host.harness().commit(async (tx) => {
       const conversation = await tx.createConversation({ ownership: { kind: 'ownerless' } })
-      await configure(tx, conversation.id, {
-        model: agent.model,
-        thinkingLevel: agent.thinkingLevel,
-      })
+      await configure(tx, conversation.id, agent)
       if (input.title) (await tx.doc(host.metadata, conversation.id)).title = input.title
       await workspaces(host).create(tx, conversation.id, input.cwd ?? host.projectRoot)
       return conversation.id
@@ -209,9 +206,11 @@ export default function workspaceExtension(host: ExtensionHost) {
     tasks: [service.Preparation, service.Lander],
     hooks: [
       hook(ToolTask, {
-        beforeTool: async (_call, api, caller) => {
+        beforeTool: async (call, api, caller) => {
+          // `message` never touches the checkout, and it is how a conversation reports that its workspace is gone.
+          if (call.name === 'message') return undefined
           const reason = await service.unavailable(api.conversationId, caller)
-          return reason ? { block: reason } : undefined
+          return reason ? { block: `${reason}. \`message\` still works, to report it.` } : undefined
         },
       }),
       // The lander conversation is its log: no model runs there.

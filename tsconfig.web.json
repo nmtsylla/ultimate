@@ -27,6 +27,7 @@
     "extensions/messages/caller.ts",
     "extensions/cloud/types.ts",
     "extensions/conversations/types.ts",
+    "extensions/dream/stage.ts",
     "extensions/dream/types.ts",
     "extensions/lineage/types.ts",
     "extensions/phase/types.ts",
@@ -43,6 +44,7 @@
     "extensions/sounds/conductor.ts",
     "extensions/sounds/engine.ts",
     "extensions/sounds/narration.ts",
+    "extensions/sounds/speaker.ts",
     "extensions/instance/links.ts",
     "extensions/update/item.ts",
     "extensions/attachments/limits.ts",
@@ -52,7 +54,6 @@
     "extensions/sidebar/landings.ts",
     "extensions/subagents/landing.ts",
     "extensions/onboarding/onboarded.ts",
-    "extensions/sidebar/label.ts",
     "extensions/tasks/kinds.ts",
     "extensions/sidebar/listed.ts",
     "extensions/side-chat/logic.ts",
@@ -72,8 +73,10 @@
     "lib/entries.ts",
     "lib/families.ts",
     "lib/marks.ts",
+    "lib/message-state.ts",
     "lib/source-frames.ts",
     "extensions/subagents/message-types.ts",
-    "test/web"
+    "test/web",
+    "extensions/*/test/web"
   ]
 }

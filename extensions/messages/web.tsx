@@ -24,6 +24,7 @@ import {
 import {
   answeredMessages,
   emptyMessages,
+  openQuestion,
   scriptMessaged,
   threadRow,
   ultimateCompact,
@@ -31,6 +32,7 @@ import {
 import { callerOf } from './caller.ts'
 import { OpenMessages } from './open.tsx'
 import { QuestionPointer } from './pointer.tsx'
+import { OffscreenQuestions } from './waiting.tsx'
 import { StandingDoc } from '../subagents/ui.tsx'
 import { MessagesDoc, CallerAction } from './refs.ts'
 import type { MessagesData } from './refs.ts'
@@ -85,13 +87,7 @@ function MessageNavigation() {
   useEffect(() => {
     if (target?.message === undefined || !log) return
     const asked = log.messages.find((m) => m.id === target.message)
-    if (
-      asked?.call &&
-      asked.from === target.conversation &&
-      asked.to === 'user' &&
-      asked.reply &&
-      asked.state === 'delivered'
-    ) {
+    if (asked?.call && asked.from === target.conversation && openQuestion(asked)) {
       showSurface('agent')
       setTarget({ conversation: target.conversation, call: asked.call })
     } else setTarget(undefined)
@@ -133,7 +129,12 @@ function MessageNavigation() {
 }
 
 export default defineWebExtension({
-  slots: { overlay: [MessageNavigation], 'composer.status': [OpenMessages] },
+  slots: {
+    overlay: [MessageNavigation],
+    'composer.status': [OpenMessages],
+    // Under the pinned prompt, which comes first, so a mark never covers it.
+    'transcript.top': [{ component: OffscreenQuestions, order: 1 }],
+  },
   entries: {
     'board.message': MessageInput,
     'board.reply': MessageInput,
@@ -141,7 +142,7 @@ export default defineWebExtension({
     'board.answered': () => null,
     // Retired: triage's wake-up pointer in older transcripts.
     'board.wake': () => null,
-    // The agent's reminder of the questions still open; the user sees them in the To-dos panel.
+    // The agent's reminder of the questions still open; the user sees them in the Inbox.
     'board.open': () => null,
     'pi.assistant': CompactAnswer,
   },

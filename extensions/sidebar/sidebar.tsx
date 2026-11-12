@@ -378,8 +378,13 @@ function Tree({
         conversation={conversation}
         key={conversation?.id ?? 'ultimate'}
         name={name}
+        // Its mark keeps pulsing while it works, also when its word says what waits on you.
         presence={
-          state === 'working' || landing ? 'working' : state === 'waits' ? 'waiting' : 'idle'
+          state === 'working' || landing || (busy && state === 'waits')
+            ? 'working'
+            : state === 'waits'
+              ? 'waiting'
+              : 'idle'
         }
         onOpen={() =>
           conversation && !isUltimate
@@ -395,7 +400,8 @@ function Tree({
             {state === 'working' && conversation ? (
               <StandingPhase id={conversation.id} />
             ) : (
-              <span className={cn('shrink-0', stateTone[state])}>{stateWord(state, waiting)}</span>
+              // No count: the Inbox row under it carries how many wait on the user.
+              <span className={cn('shrink-0', stateTone[state])}>{stateWord(state)}</span>
             )}
             {latest > 0 && (
               <span
@@ -433,8 +439,11 @@ function Tree({
       },
       log,
     )
-    // Queued input counts as working too; subagents working below it say so.
-    const state = working.get(conversation.id) ?? (derived === 'working' ? 'self' : undefined)
+    // Queued input counts as working too; subagents working below it say so. A question to the user outranks both.
+    const state =
+      derived === 'waits'
+        ? undefined
+        : (working.get(conversation.id) ?? (derived === 'working' ? 'self' : undefined))
     return (
       <Row
         activity={overview[conversation.id]?.activity}

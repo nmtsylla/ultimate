@@ -8,6 +8,7 @@ import { strEnum } from '../../lib/schema.ts'
 import { ROOT_CONVERSATION_ID } from '@earendil-works/pi-durable'
 import type { ConversationId, Tx } from '@earendil-works/pi-durable'
 import { formatAgo } from '../../lib/ago.ts'
+import { openQuestion } from '../../lib/message-state.ts'
 import { Messages } from './api.ts'
 import { Standing } from '../subagents/api.ts'
 import type { Message } from './api.ts'
@@ -48,9 +49,8 @@ export const questionsParameter = arr(
 
 /**
  * The questions as the message stores them, or the reason they cannot be asked: text and labels must not be blank, a
- * choice needs two options with distinct labels and keys (a multi answer joins its labels with ", ", so they hold
- * none), a scale an ascending range of at most 10 steps, and the questions and their numbers must be distinct. Fields
- * that do not apply to a kind are dropped.
+ * choice needs two options with distinct labels and keys, a scale an ascending range of at most 10 steps, and the
+ * questions and their numbers must be distinct. Fields that do not apply to a kind are dropped.
  */
 export function checkQuestions(questions: Question[]): Question[] {
   if (!questions.length) throw new Error('questions must name at least one question')
@@ -89,10 +89,6 @@ export function checkQuestions(questions: Question[]): Question[] {
       if (new Set(keys).size !== keys.length) throw new Error(`${where} repeats an option key`)
       if (options.some((o) => /^(something else|other)[.…]*$/i.test(o.label)))
         throw new Error(`${where}: the card offers "Something else…" itself; leave that option out`)
-      if (question.kind === 'multi' && options.some((o) => o.label.includes(', ')))
-        throw new Error(
-          `${where}: a multi answer joins its labels with ", ", so its labels hold no ", "`,
-        )
       kept.options = options
     } else if (question.kind === 'scale') {
       const scale = question.scale
@@ -112,8 +108,7 @@ export function checkQuestions(questions: Question[]): Question[] {
   })
 }
 
-/** A reply-enabled message to the user that the user has neither answered nor dismissed yet. */
-export const openQuestion = (m: Message) => m.to === 'user' && m.reply && m.state === 'delivered'
+export { openQuestion }
 /** A message in one line: its questions by number, else its first line that asks something, else its first line, clipped. */
 export const gist = (message: Pick<Message, 'text' | 'questions'>) => {
   const lines = message.questions?.length

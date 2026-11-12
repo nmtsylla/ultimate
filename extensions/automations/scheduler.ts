@@ -7,7 +7,7 @@ import {
 import type { ConversationId, Cursor, Tx } from '@earendil-works/pi-durable'
 import type { ExtensionHost } from '../../server/extensions.ts'
 import { SubagentsApi } from '../subagents/api.ts'
-import { discoverAgents, hostDefaultModel } from '../../lib/agents.ts'
+import { discoverAgents, hostDefault } from '../../lib/agents.ts'
 import { nextAt } from './schedule.ts'
 import type { Automation, Run } from './types.ts'
 import { RUN_TASK } from './types.ts'
@@ -55,8 +55,9 @@ export function scheduler(
           const a = task.input.automation
           if (!host.extensions().some((e) => e.name === 'subagents' && e.enabled))
             throw new Error('automations needs the subagents extension enabled')
-          // The root's agent for its tools, on the default model: the root's stored model may have lost its login.
-          const parent = { ...(await runtime.agent(context)), model: await hostDefaultModel(host) }
+          // The root's agent for its tools, on the default model and thinking level: the root's stored model may have
+          // lost its login.
+          const parent = { ...(await runtime.agent(context)), ...(await hostDefault(host)) }
           const profile = a.agent ? await definition(host, a.agent) : undefined
           await runtime.commit(async (tx) => {
             const child = await host.need(SubagentsApi).createChild(tx, {
@@ -152,6 +153,10 @@ export function scheduler(
         return { status: 'terminal', outcome: { status: 'aborted' } }
       }, context),
   })
+  /**
+   * Every trigger kind fires here, manual runs included. The seventh fire within an hour (`recentFires`) pauses the
+   * automation and escalates instead; an overlapping prompt run is recorded as skipped, not queued.
+   */
   async function fire(tx: Tx, a: Automation, firedAt: number, text = '') {
     a.recentFires = (a.recentFires ?? []).filter((at) => at > firedAt - 3600000)
     if (a.recentFires.length >= 6) {
@@ -218,6 +223,11 @@ export function scheduler(
     a.runs = a.runs.slice(-50)
     return a.runs.at(-1)!
   }
+  /**
+   * One root-owned task per enabled schedule: plan → sleep → fire. The sleep survives a restart; an overdue fire runs once
+   * on waking and a recurring schedule plans again from now. The fire, its run and the checkpoint commit together.
+   * Pause, edit and delete retire it (`a.scheduler` no longer names it) without stopping runs already started.
+   */
   const Scheduler = defineTask<
     { id: string },
     { phase: 'plan' } | { phase: 'sleep'; until: number } | { phase: 'fire'; until: number },

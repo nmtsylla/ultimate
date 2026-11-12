@@ -12,6 +12,7 @@ import type {
 import type { ServerEvents, ConversationSummary, ConfigureRequest } from '../shared/protocol.ts'
 import { UI_REVISION, imageMimeTypes, maxImageBytes, maxImages } from '../shared/protocol.ts'
 import { listModels } from './models.ts'
+import { hostDefault } from '../lib/agents.ts'
 import { expandSkillCommand } from './skills.ts'
 import type { Extensions } from './extensions.ts'
 import { context } from './harness.ts'
@@ -19,7 +20,7 @@ import type { OpenHost, PreparedHost } from './harness.ts'
 import type { createSystem } from './system.ts'
 import { requestSwap } from './supervisor-protocol.ts'
 import { UiState } from './ui-state.ts'
-import type { JsonValue } from '@earendil-works/chord'
+import type { JsonValue } from '@earendil-works/chord/json'
 import { clampThinkingLevel, getSupportedThinkingLevels } from '@earendil-works/pi-ai'
 import { Metadata } from './metadata.ts'
 import { EVENT_LOG_LABEL, emit } from './events.ts'
@@ -536,20 +537,21 @@ export async function createApi(
           return true
         }
         if (url.pathname === '/api/restart') {
-          const error = await requestSwap(async (generation) => {
-            json(202, { ok: true, generation })
-          }, host.build())
+          const error =
+            (await extensions.prepared()) ??
+            (await requestSwap(async (generation) => {
+              json(202, { ok: true, generation })
+            }, host.build()))
           if (!response.writableEnded) json(500, { ok: false, error })
           return true
         }
         if (url.pathname === '/api/conversations') {
           const cwd = data.cwd === undefined ? host.projectRoot : text(data.cwd, 'cwd')
           const title = data.title === undefined ? undefined : text(data.title, 'title')
-          const agent = await root.agent(context)
           const created = await harness.createConversation(
             {
               ownership: { kind: 'ownerless' },
-              agent: { cwd, model: agent.model, thinkingLevel: agent.thinkingLevel },
+              agent: { cwd, ...(await hostDefault(host)) },
             },
             context,
           )

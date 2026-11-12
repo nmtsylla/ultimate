@@ -6,7 +6,7 @@ import { Kbd } from '@/components/ui/kbd'
 import { api, cn, errorMessage, useConversation, useDocOf, useViewport } from '@/sdk'
 import type { Question } from '../messages/refs.ts'
 import { MessagesDoc } from '../messages/ui.tsx'
-import { keyCard, openQuestions } from './open.tsx'
+import { keyCard, openQuestions, waitsOnUser } from './open.tsx'
 import type { Message } from './open.tsx'
 import { brief, QuestionItem } from './question.tsx'
 import { AnswerAction, DismissAction } from './refs.ts'
@@ -61,7 +61,7 @@ export function MessageQuestions({
   const questions = openQuestions(message)
   const card = `message:${message.id}`
   const shown = useKeys(card)
-  if (message.to !== 'user' || !message.reply || message.state !== 'delivered') return null
+  if (!waitsOnUser(message)) return null
   return (
     <Card
       card={card}
@@ -262,7 +262,7 @@ function Card({
   const phone = useViewport() === 'phone'
   const hints = keys && !phone
   const words = questions.map((question, index) => answerOf(question, drafts[index]))
-  const ready = answered(questions, words)
+  const ready = answered(questions, drafts)
   const open = questions.flatMap((question, index) =>
     !words[index] && pickIndices(question).length ? [index] : [],
   )
@@ -326,10 +326,7 @@ function Card({
     for (const [index, question] of questions.entries())
       if (indices.includes(index)) next[index] = pickDraft(question)
     setDrafts(next)
-    return answered(
-      questions,
-      questions.map((question, index) => answerOf(question, next[index])),
-    )
+    return answered(questions, next)
   }
   const run = async (action: () => Promise<unknown>) => {
     if (busy) return

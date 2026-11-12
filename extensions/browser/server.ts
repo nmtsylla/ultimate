@@ -19,9 +19,10 @@ import { strEnum } from '../../lib/schema.ts'
 import { formatDimensionNote, resizeImage } from '@earendil-works/pi-coding-agent'
 import { defineExtension, defineTool, section } from '@earendil-works/pi-durable'
 import { chromium, type Browser, type BrowserContext, type Page } from 'playwright-core'
-import { identify } from '../../lib/process-group.ts'
+import { groupTarget, identify } from '../../lib/process-group.ts'
 import type { ExtensionHost } from '../../server/extensions.ts'
-import { fetchText, sourceFrames } from '../../lib/source-frames.ts'
+import { fetchAssets, sourceFrames } from '../../lib/source-frames.ts'
+import { watchSteer } from '../../lib/steer.ts'
 
 /** Chromium executables Playwright may have installed under `home` for `platform`, newest first. */
 export async function playwrightChromiums(
@@ -118,14 +119,23 @@ async function browserProcess(browser: Browser) {
  */
 function killGroup(owner: { pid: number; start: string } | undefined) {
   if (!owner || identify(owner.pid) !== owner.start) return
+  const target = groupTarget(owner.pid)
   try {
-    process.kill(-owner.pid, 'SIGKILL')
+    process.kill(target, 'SIGKILL')
   } catch {
     // The group exited since (ESRCH), or only zombies are left of it (EPERM on Darwin).
   }
 }
 
 async function capture(page: Page, file: string, selector?: string, fullPage = false) {
+  // Chromium 155: DOMContentLoaded can precede the page's first compositor surface, and captureScreenshot then fails
+  // with "Unable to capture screenshot". Cross a rendering update first; the first rAF itself still runs before paint.
+  await page.evaluate(
+    () =>
+      new Promise<void>((painted) =>
+        requestAnimationFrame(() => requestAnimationFrame(() => painted())),
+      ),
+  )
   await mkdir(dirname(file), { recursive: true })
   const target = selector ? page.locator(selector) : page
   const png = await target.screenshot({
@@ -313,19 +323,35 @@ export default function browserExtension(host: ExtensionHost) {
                         ),
                         ms,
                       )
-                    let outcome: Awaited<ReturnType<typeof wait>>
-                    for (;;) {
-                      try {
-                        outcome = await wait()
-                        break
-                      } catch (error) {
-                        // A reload (hot reload, server swap) destroys the wait, not the sent turn: the page keeps its
-                        // sent records in sessionStorage, so waiting again in the new page is a retry, never a resend.
-                        if (!String(error).includes('Execution context was destroyed')) throw error
-                        context.abortSignal?.throwIfAborted()
-                        api.output('The page reloaded; waiting again\n')
-                        await hook()
+                    // A steer queued meanwhile ends the call with what it has, as it ends an interruptible bash call.
+                    const { promise: steered, resolve: steer } = Promise.withResolvers<'steered'>()
+                    const stopSteer = await watchSteer(api, context, () => steer('steered'))
+                    const started = Date.now()
+                    let outcome: Awaited<ReturnType<typeof wait>> | 'steered'
+                    try {
+                      for (;;) {
+                        try {
+                          outcome = await Promise.race([wait(), steered])
+                          break
+                        } catch (error) {
+                          // A reload (hot reload, server swap) destroys the wait, not the sent turn: the page keeps
+                          // its sent records in sessionStorage, so waiting again in the new page is a retry, never a
+                          // resend.
+                          if (!String(error).includes('Execution context was destroyed'))
+                            throw error
+                          context.abortSignal?.throwIfAborted()
+                          api.output('The page reloaded; waiting again\n')
+                          await hook()
+                        }
                       }
+                    } finally {
+                      await stopSteer()
+                    }
+                    if (outcome === 'steered') {
+                      outcomes.push(
+                        `Step ${index + 1}: interrupted by a steering message after ${Math.round((Date.now() - started) / 1000)}s; later steps did not run`,
+                      )
+                      return undefined
                     }
                     if ('error' in outcome) throw new Error(outcome.error.replace(/^Error: /, ''))
                     value = outcome.result
@@ -455,12 +481,12 @@ export default function browserExtension(host: ExtensionHost) {
       const title = await guard(page.title())
       // Errors name source files and lines, as dev tools show them, not positions in the bundle.
       const maps = new Map()
+      // The page's own origin, after redirects: Chromium already reached it, and a preview's frames map too.
+      const read = fetchAssets(new URL(page.url()).origin)
       outcomes.splice(
         0,
         outcomes.length,
-        ...(await guard(
-          Promise.all(outcomes.map((outcome) => sourceFrames(outcome, fetchText, maps))),
-        )),
+        ...(await guard(Promise.all(outcomes.map((outcome) => sourceFrames(outcome, read, maps))))),
       )
       context.abortSignal?.throwIfAborted()
       return {

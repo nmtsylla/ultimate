@@ -10,7 +10,8 @@ import type { Source } from '../server/project.ts'
 import { writeTextAtomically } from './json-file.ts'
 import { isIconName, isMarkTint, markTints } from './marks.ts'
 import type { MarkTint } from './marks.ts'
-import { DEFAULT_FAMILY, definitionRuns, isFamilyName, refOf } from './families.ts'
+import { DEFAULT_FAMILY, definitionRuns, isFamilyName, refName, refOf } from './families.ts'
+import type { Families } from './families.ts'
 import { readFamilies } from './families-settings.ts'
 // oxlint-disable-next-line no-restricted-imports -- agent discovery follows the core project trust decision
 import { projectDecision, useProjectSetup } from '../server/project-setup.ts'
@@ -109,9 +110,13 @@ export function configuredModel(
   return configured(settings, family).find((ref) => hasLogin(available, ref))
 }
 
+type DefaultSettings = Pick<
+  SettingsManager,
+  'getDefaultProvider' | 'getDefaultModel' | 'getDefaultThinkingLevel'
+>
 type DefaultHost = {
   modelRuntime: Pick<ModelRuntime, 'getAvailableSnapshot'>
-  settings: Pick<SettingsManager, 'getDefaultProvider' | 'getDefaultModel'>
+  settings: DefaultSettings
   userHome: string
   projectRoot: string
 }
@@ -120,9 +125,68 @@ type DefaultHost = {
 export const familyDefault = async (host: Pick<DefaultHost, 'userHome' | 'projectRoot'>) =>
   refOf((await readFamilies(host.userHome, host.projectRoot)).families[DEFAULT_FAMILY].model)
 
-/** `defaultModel` for a host's model runtime, its project's default family and Pi settings. */
-export const hostDefaultModel = async (host: DefaultHost) =>
-  defaultModel(host.modelRuntime.getAvailableSnapshot(), host.settings, await familyDefault(host))
+/**
+ * What a conversation runs on when nothing pins it, as agent fields: `defaultModel`, and the default family's thinking
+ * level, else Pi's default one. The one answer the root and every starter take, so the model and its thinking level
+ * come from the same place (#552043: a branch got the default model with the root's stored thinking).
+ */
+export function defaultAgent(
+  available: readonly Listed[],
+  settings: DefaultSettings,
+  family: Families['families'][string],
+): { model?: ModelRef; thinkingLevel?: ModelThinkingLevel } {
+  const model = defaultModel(available, settings, refOf(family.model))
+  const thinkingLevel = family.thinking ?? settings.getDefaultThinkingLevel()
+  return { ...(model ? { model } : {}), ...(thinkingLevel ? { thinkingLevel } : {}) }
+}
+
+/** `defaultAgent` for a host's model runtime, its project's default family and Pi settings. */
+export const hostDefault = async (host: DefaultHost) =>
+  defaultAgent(
+    host.modelRuntime.getAvailableSnapshot(),
+    host.settings,
+    (await readFamilies(host.userHome, host.projectRoot)).families[DEFAULT_FAMILY],
+  )
+
+/**
+ * `definition` run on family `name`'s model and thinking instead of its own. Throws naming the families when `name` is
+ * unknown or, outside a preview, its model has no login here: the caller chose it, so it never falls back.
+ */
+export function onFamily(
+  definition: AgentDefinition,
+  name: string,
+  families: Families,
+  available: readonly Listed[],
+): AgentDefinition {
+  const names = Object.keys(families.families).join(', ')
+  if (!Object.hasOwn(families.families, name))
+    throw new Error(`Unknown family: ${name}. Families: ${names}`)
+  const runs = definitionRuns({ family: name }, families)
+  if (runs.model && !previewModel() && !hasLogin(available, runs.model))
+    throw new Error(`No login for ${refName(runs.model)} (family ${name}). Families: ${names}`)
+  return { ...definition, runs }
+}
+
+/**
+ * The family a conversation configured with `change` from `definition` runs as, for the models extension's `Family`
+ * document: the definition's family (or the one `onFamily` put it on) while it runs that family's model, null for a
+ * pinned model or when it fell back to another. In a preview, which runs every family on its one model, the family
+ * stays. Recorded at the
+ * start because two families can share a model: worked out from the model, a Lead coordinator on Opus showed as Design
+ * or, while the default family was on Opus, as Ultimate (#550837).
+ */
+export function definitionFamily(
+  definition: AgentDefinition | undefined,
+  change: Pick<AgentChange, 'model'>,
+): string | null {
+  const runs = definition?.runs
+  if (runs?.via !== 'family' || !runs.family) return null
+  if (!runs.model || previewModel()) return runs.family
+  const model = change.model
+  return model?.provider === runs.model.provider && model.modelId === runs.model.modelId
+    ? runs.family
+    : null
+}
 
 /**
  * The agent change a definition makes over `parent`: the explicit model, else the definition's pin when it has a login

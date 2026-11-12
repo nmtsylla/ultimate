@@ -21,6 +21,7 @@ import { callerOf } from './caller.ts'
 import { CallerAction, SettleAction } from './refs.ts'
 import type { Via } from './refs.ts'
 import { implementAction } from '../../lib/actions.ts'
+import { isOwed } from '../../lib/message-state.ts'
 import { actingAs } from '../../lib/acting-as.ts'
 import { imagesParameter, SCAN_PAGE } from './images.ts'
 import { parentOf, Started, starterOf } from './addresses.ts'
@@ -28,8 +29,8 @@ import { delivery } from './delivery.ts'
 import { notice } from './notice.ts'
 import { send } from './send.ts'
 import type { Device } from '../../shared/events.ts'
-import type { Context } from '@earendil-works/chord'
-import { route, working } from './route.ts'
+import type { Context } from '@earendil-works/chord/context'
+import { reported, route, working } from './route.ts'
 import { projectsSection, remoteAction, remoteReplyAction, tell } from './remote.ts'
 import { branchTool } from './branch.ts'
 export { gist, openQuestionsNote } from './questions.ts'
@@ -200,7 +201,7 @@ export default function messages(host: ExtensionHost) {
     tasks: [delivery(host), route(host), notice(host)],
     hooks: [
       hook(GenerationTask, {
-        // Pi upstream: @earendil-works/pi-durable@1.5.0 — patched transactional beforeInput hook.
+        // Pi upstream: @earendil-works/pi-durable@1.5.2 — patched transactional beforeInput hook.
         beforeInput: (_input, api) => openQuestionsNote(api.tx, api.conversationId, Date.now()),
         onYield: async (_answer, api, ctx) => {
           // A branch's answers go up to its starter; the primary agent's answers to a branch go down to it.
@@ -261,7 +262,7 @@ export default function messages(host: ExtensionHost) {
       defineTool({
         name: 'message',
         description:
-          'Send a message to #id or @name; it returns immediately. A busy recipient gets it after its current run, or during it with steer: true (the default for @ultimate). images forwards screenshots or other images from your conversation, to an agent or to the user. To an agent or the user whose message you owe an answer, it is that answer (with its images and questions) and ends your run.',
+          'Send a message to #id or @name; it returns immediately. A busy recipient gets it after its current run, or during it with steer: true (the default for @ultimate). images forwards screenshots or other images from your conversation, to an agent or to the user. To an agent or the user whose message you owe an answer, it is that answer (with its images and questions). One to an agent ends your run; one to the user ends it too, unless an agent still waits for your answer or a branch whose reply or report you read in this run does. Sent from codemode or beside other calls in its tool round, it never ends the run.',
         parameters: obj({
           to: str(),
           text: str({ minLength: 1 }),
@@ -318,14 +319,23 @@ export default function messages(host: ExtensionHost) {
           if (input.to !== 'user')
             return { output: [{ type: 'text', text: `Message ${id} sent.` }] }
           // The message is @ultimate's answer: the run ends here instead of restating it, unless a reply it has read
-          // is owed. One still queued gets its own turn.
+          // is owed. One still queued gets its own turn. Pi ends the run only when every call of the tool round
+          // terminates, and codemode's nested calls never end it. Nor does it end while a branch whose reply or report
+          // this run read awaits its answer: the final answer goes there (#570368).
+          const inputs =
+            (await host.harness().snapshot(LiveDoc, api.conversationId, ctx))?.run?.inputs ?? []
+          const read = (
+            await Promise.all(
+              inputs.map(async (s) => (await host.harness().submission(s, ctx))?.status(ctx)),
+            )
+          ).flatMap((s) => (s?.type === 'input' && s.entry !== undefined ? [s.entry] : []))
           const owed = await host
             .harness()
             .commit(
               async (tx) =>
                 (await tx.doc(Messages, ROOT_CONVERSATION_ID)).messages.some(
-                  (m) => m.to === api.conversationId && m.reply && m.state === 'delivered',
-                ),
+                  (m) => m.to === api.conversationId && isOwed(m),
+                ) || (await reported(host, tx, api.conversationId, read)).branches.length > 0,
               ctx,
             )
           return {

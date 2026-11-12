@@ -257,7 +257,10 @@ export function Bubble({
           <Body pending={writing ? 'Writing you a message…' : undefined} text={text} />
         )}
       </div>
-      <div className="mt-3 overflow-hidden rounded-lg border border-border/70 bg-card/60 empty:hidden [&>:first-child]:border-t-0">
+      <div
+        className="mt-3 overflow-hidden rounded-lg border border-border/70 bg-card/60 empty:hidden [&>:first-child]:border-t-0"
+        data-ui="message-card-body"
+      >
         {message?.images && <MessageImages conversation={from} entry={message.images.entry} />}
         {children}
         {answer && <AttachedAnswer answer={answer} question={message!} />}
@@ -748,7 +751,7 @@ const InputImages = ({ entry }: { entry: EntryRecord }) => <Thumbnails images={i
  * The images a message to you carries: they stay in the sender's entry `entry` (a screenshot, a pasted input), read from
  * the loaded transcript or else fetched from its stored history.
  */
-function MessageImages({ conversation, entry }: { conversation: number; entry: number }) {
+export function MessageImages({ conversation, entry }: { conversation: number; entry: number }) {
   const loaded = useTranscript().find(
     (item) => item.conversationId === conversation && item.id === entry,
   )
