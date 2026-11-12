@@ -32,6 +32,7 @@ import { definitionRuns, refName, refOf } from '../../lib/families.ts'
 import { readFamilies } from '../../lib/families-settings.ts'
 import { readSettings, userSettingsPath } from '../../lib/settings.ts'
 import { Branched } from '../lineage/api.ts'
+import type { Plan } from '../plan/refs.ts'
 import { ArmAction, DisarmAction, PrewalkDoc, StatusAction } from './refs.ts'
 import type { PrewalkState } from './refs.ts'
 
@@ -80,7 +81,7 @@ async function resolveTarget(
   return {
     target: model,
     ...(thinking ? { thinking } : {}),
-    ...(pinned || preview ? {} : { family: target }),
+    ...(pinned ? {} : { family: target }),
   }
 }
 
@@ -116,7 +117,7 @@ async function arm(
 ) {
   const outcome = await commit(async (tx) => {
     const result = await armTx(host, tx, id, target)
-    // #8088: action responses cross the settled transaction boundary; a live overlay fails HTTP JSON serialization.
+    // #8088: tool/action results cross the settled transaction boundary; a live overlay cannot be serialized.
     return { ...result, state: plain(result.state) }
   })
   if (outcome.noop) throw new Error(nothingToSwitch(outcome.noop))
@@ -203,18 +204,12 @@ function projectEdit(
   return within !== '' && within !== '..' && !within.startsWith(`..${sep}`) && !isAbsolute(within)
 }
 
-/** The plan gate: an enabled plan extension needs at least one task; without the extension, the edit alone is enough. */
-async function hasPlanTask(host: ExtensionHost, tx: Tx, id: ConversationId) {
+/** The plan gate, read without creating a missing plan: an enabled plan needs a task; without it, the edit is enough. */
+async function hasPlanTask(host: ExtensionHost, id: ConversationId, ctx: Context) {
   const token = host.doc('ultimate.plan')
   if (!token) return true
-  const plan = await tx.doc(token, id)
-  return Object.values(plan.epics ?? {}).some(
-    (epic) =>
-      !!epic &&
-      typeof epic === 'object' &&
-      !Array.isArray(epic) &&
-      Object.keys((epic as JsonObject).tasks ?? {}).length > 0,
-  )
+  const plan = (await host.harness().snapshot(token, id, ctx)) as Plan | undefined
+  return Object.values(plan?.epics ?? {}).some((epic) => Object.keys(epic.tasks).length > 0)
 }
 
 /** Configure and record the handoff atomically. Replaying the hook sees no `armed` state and does nothing. */
@@ -225,10 +220,11 @@ async function switchAfterEdit(
   id: ConversationId,
   ctx: Context,
 ) {
+  if (!(await hasPlanTask(host, id, ctx))) return
   await host.harness().commit(async (tx) => {
     const state = await tx.doc(Prewalk, id)
     const armed = state.armed
-    if (!armed || !(await hasPlanTask(host, tx, id))) return
+    if (!armed) return
     const agent = await tx.doc(AgentDoc, id)
     const assistant = (await tx.entry(AssistantEntry, assistantId))?.model?.[0] as
       | AssistantMessage
@@ -312,7 +308,7 @@ export default function prewalk(host: ExtensionHost) {
             const state = await api.commit(async (tx) => {
               const current = await tx.doc(Prewalk, api.conversationId)
               delete current.armed
-              return current
+              return plain(current)
             }, ctx)
             return finish(api, state, ctx)
           }

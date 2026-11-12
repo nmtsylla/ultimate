@@ -151,6 +151,13 @@ it('switches once after a planned successful project edit, and only then', async
     expect(await f.opened.harness.snapshot(Prewalk, f.opened.root.id, context)).toMatchObject({
       armed: { target: fast, thinking: 'low', family: 'fast' },
     })
+    const disarmedByTool = await f.call('prewalk', { action: 'disarm' })
+    expect(disarmedByTool.result.isError).not.toBe(true)
+    expect(JSON.stringify(disarmedByTool.result.content)).toContain('{}')
+    await f.call('prewalk', { action: 'arm', target: 'fast' })
+    await f.call('read', { path: inside })
+    expect(await f.opened.harness.snapshot(Plan, f.opened.root.id, context)).toBeUndefined()
+
     await f.call('plan', { action: 'create', title: 'Ship it', body: 'Request: test' })
     await f.call('plan', {
       action: 'add',
