@@ -49,6 +49,9 @@ export const docs = [Prewalk]
 type Armed = NonNullable<PrewalkState['armed']>
 type Resolved = Omit<Armed, 'at'>
 
+/** A plain JSON value, detached from a transaction's live document overlay. */
+const plain = <T>(value: T): T => JSON.parse(JSON.stringify(value)) as T
+
 /** The target a family or explicit provider/model resolves to for this conversation, clamped as Pi clamps a model pick. */
 async function resolveTarget(
   host: ExtensionHost,
@@ -111,7 +114,11 @@ async function arm(
   id: ConversationId,
   target?: string,
 ) {
-  const outcome = await commit((tx) => armTx(host, tx, id, target))
+  const outcome = await commit(async (tx) => {
+    const result = await armTx(host, tx, id, target)
+    // #8088: action responses cross the settled transaction boundary; a live overlay fails HTTP JSON serialization.
+    return { ...result, state: plain(result.state) }
+  })
   if (outcome.noop) throw new Error(nothingToSwitch(outcome.noop))
   return outcome.state
 }
@@ -139,14 +146,14 @@ export const actions = {
       if (!(await tx.conversation(id))) throw new Error(`No conversation #${id}`)
       const state = await tx.doc(Prewalk, id)
       delete state.armed
-      return state
+      return plain(state)
     }, context)
   }),
   status: implementAction(StatusAction, async (args, { host }) => {
     const id = conversationArg(args)
     return host.harness().commit(async (tx) => {
       if (!(await tx.conversation(id))) throw new Error(`No conversation #${id}`)
-      return tx.doc(Prewalk, id)
+      return plain(await tx.doc(Prewalk, id))
     }, context)
   }),
 }

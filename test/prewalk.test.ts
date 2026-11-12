@@ -17,7 +17,8 @@ import type { ExtensionHost } from '../server/extensions.ts'
 import { Metadata } from '../server/metadata.ts'
 import codingPlan from '../extensions/plan/server.ts'
 import { Plan } from '../extensions/plan/server.ts'
-import prewalk, { Prewalk } from '../extensions/prewalk/server.ts'
+import prewalk, { actions as prewalkActions, Prewalk } from '../extensions/prewalk/server.ts'
+import type { ActionContext } from '../server/actions.ts'
 import { Branched } from '../extensions/lineage/api.ts'
 import { eventHost, removeTemp, temp, until } from './helpers.ts'
 
@@ -59,17 +60,16 @@ async function fixture(project: JsonObject = {}) {
   let opened: OpenHost | undefined
   const events = eventHost(() => opened!.harness, 'prewalk')
   const notices: string[] = []
-  prepared.registry.install(
-    prewalk({
-      ...prepared,
-      harness: () => opened!.harness,
-      projectSettings: async () => project,
-      emit: events.emit,
-      react: events.react,
-      doc: (kind: string) => (kind === Plan.definition.kind ? Plan : events.doc(kind)),
-      notice: (message: string) => notices.push(message),
-    } as unknown as ExtensionHost),
-  )
+  const actionHost = {
+    ...prepared,
+    harness: () => opened!.harness,
+    projectSettings: async () => project,
+    emit: events.emit,
+    react: events.react,
+    doc: (kind: string) => (kind === Plan.definition.kind ? Plan : events.doc(kind)),
+    notice: (message: string) => notices.push(message),
+  } as unknown as ExtensionHost
+  prepared.registry.install(prewalk(actionHost))
   const requested: string[] = []
   const route: FauxResponseFactory = (transcript, _options, _state, model) => {
     requested.push(`${model.provider}/${model.id}`)
@@ -115,6 +115,7 @@ async function fixture(project: JsonObject = {}) {
     projectRoot,
     notices,
     requested,
+    actionHost,
     emit: events.emit,
     settled: events.settled,
   }
@@ -131,6 +132,20 @@ it('switches once after a planned successful project edit, and only then', async
     expect(refused.result.isError).toBe(true)
     expect(JSON.stringify(refused.result.content)).toContain('No login for missing/model')
     expect(await f.opened.harness.snapshot(Prewalk, f.opened.root.id, context)).toBeUndefined()
+
+    const ctx = { host: f.actionHost } as ActionContext
+    const armedByAction = await prewalkActions.arm(
+      { conversation: f.opened.root.id, target: 'fast' },
+      ctx,
+    )
+    expect(JSON.parse(JSON.stringify(armedByAction))).toMatchObject({
+      armed: { target: fast, thinking: 'low', family: 'fast' },
+    })
+    expect(
+      JSON.stringify(await prewalkActions.status({ conversation: f.opened.root.id }, ctx)),
+    ).toContain('faux-fast')
+    const disarmedByAction = await prewalkActions.disarm({ conversation: f.opened.root.id }, ctx)
+    expect(JSON.parse(JSON.stringify(disarmedByAction))).toEqual({})
 
     await f.call('prewalk', { action: 'arm', target: 'fast' })
     expect(await f.opened.harness.snapshot(Prewalk, f.opened.root.id, context)).toMatchObject({
