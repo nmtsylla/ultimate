@@ -231,12 +231,15 @@ export const actions = { state: async () => state }`
     const source = `import { defineExtension } from '@earendil-works/pi-durable'
 export let raise
 export default host => {
-  raise = message => host.notice(message)
+  raise = (message, options) => host.notice(message, options)
   return defineExtension({ name: 'late-notice' })
 }`
     const { server, options } = await fixture(false, { 'late-notice': source })
     const path = join(options.ultimateRoot, 'extensions/late-notice/server.ts')
-    const previous = (await server.vite.ssrLoadModule(path)).raise as (message: string) => void
+    const previous = (await server.vite.ssrLoadModule(path)).raise as (
+      message: string,
+      options?: { diagnostic?: boolean },
+    ) => void
     const initial = server.extensions.info().find((entry) => entry.name === 'late-notice')!
       .server!.loadedAt
     await writeFile(path, source + '\n')
@@ -245,10 +248,15 @@ export default host => {
         server.extensions.info().find((entry) => entry.name === 'late-notice')!.server!.loadedAt !==
         initial,
     )
-    expect(() => previous('retired notice')).not.toThrow()
-    const current = (await server.vite.ssrLoadModule(path)).raise as (message: string) => void
-    current('current notice')
+    expect(() => previous('retired notice', { diagnostic: true })).not.toThrow()
+    const current = (await server.vite.ssrLoadModule(path)).raise as (
+      message: string,
+      options?: { diagnostic?: boolean },
+    ) => void
+    current('transient notice')
+    current('current notice', { diagnostic: true })
     expect(server.extensions.info.diagnostics()).toContain('current notice')
+    expect(server.extensions.info.diagnostics()).not.toContain('transient notice')
     expect(server.extensions.info.diagnostics()).not.toContain('retired notice')
     servers.splice(servers.indexOf(server), 1)
     await server.close()

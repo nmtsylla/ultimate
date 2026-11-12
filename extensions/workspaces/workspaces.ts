@@ -600,6 +600,9 @@ export function workspaces(host: Host) {
       if (signal?.aborted) break
       const record = await get(id, context)
       if (!record) continue
+      // A checkout whose source is gone cannot be freed: the project was moved, so nothing of that worktree exists to
+      // remove or to inspect. Read the source as a plain directory, which says so without spawning Git in it.
+      if (!(await lstat(record.source).catch(() => undefined))) continue
       await serial(record.source, async () => {
         if (signal?.aborted) return
         const workspace = (await get(id, context))!

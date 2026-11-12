@@ -290,6 +290,41 @@ it('replaces a stale own loopback mapping and leaves foreign mappings untouched'
     [],
   )
 })
+it('serves its port under the current name when Serve still names a previous MagicDNS name', async () => {
+  const serve = {
+    TCP: { '443': { HTTPS: true }, '4747': { HTTPS: true }, '4753': { HTTPS: true } },
+    Web: {
+      'rog.example.ts.net:443': { Handlers: { '/': { Proxy: 'http://127.0.0.1:8787' } } },
+      // The machine was called `old` when these were served; only the second is unreachable (not the current name).
+      'old.example.ts.net:4747': { Handlers: { '/': { Proxy: 'http://127.0.0.1:4747' } } },
+      'old.example.ts.net:4753': { Handlers: { '/': { Proxy: 'http://127.0.0.1:4753' } } },
+    },
+  }
+  const f = await fixture({ serve })
+  await writeFile(
+    join(f.home, '.ultimate/tailscale.json'),
+    JSON.stringify({ ports: { '/project/a': { port: 4747, owner: `${process.pid}:previous` } } }),
+  )
+  const app = await f.instance('/project/a', 4747)
+  expect(await app.status()).toMatchObject({
+    state: 'ready',
+    url: 'https://rog.example.ts.net:4747',
+  })
+  const invocations = await f.invocations()
+  expect(invocations).toContainEqual([
+    'serve',
+    '--bg',
+    '--yes',
+    '--https=4747',
+    'http://127.0.0.1:4747',
+  ])
+  // `serve --https=4747 off` cannot remove the old name's entry: it looks up the mapping under the current one.
+  expect(
+    invocations.filter((args) => args.includes('--https=4747') && args.includes('off')),
+  ).toEqual([])
+  expect(invocations.filter((args) => args.some((arg) => arg.includes('4753')))).toEqual([])
+  await app.close()
+})
 it('skips foreign ports for new projects and refuses foreign targets on existing assignments', async () => {
   const serve = {
     TCP: { '4747': { HTTPS: true } },

@@ -51,7 +51,13 @@ export type ExtensionHost = Pick<
   | 'chapter'
 > & {
   access: Pick<Access, 'allow'>
-  notice(message: string): void
+  /**
+   * A notice: a toast and an event. With `diagnostic: true` it also stays in the Extensions panel until the extension
+   * reloads, for a problem that is a property of the setup rather than of one operation, such as a setting that does
+   * not resolve. A notice about a single failed operation is transient: it happened, the toast said so, and keeping it
+   * in Diagnostics forever would report a condition that no longer holds.
+   */
+  notice(message: string, options?: { diagnostic?: boolean }): void
   /**
    * Provide the service of `api`. Facet scope only: staged until the facet installs, replaced on reload, kept when a
    * reload fails, and removed when the facet is disabled, removed or closed.
@@ -137,6 +143,8 @@ export async function loadExtensions(
   const facetCleanups = new Map<ExtensionHost, Set<() => Promise<void>>>()
   /** Each facet's distinct notice messages, and whether each is recorded as an event yet. */
   const facetNotices = new Map<ExtensionHost, Map<string, boolean>>()
+  /** The subset that stays in Diagnostics until this facet is disposed. */
+  const facetDiagnostics = new Map<ExtensionHost, Set<string>>()
   const extensionOf = (facetHost: ExtensionHost) =>
     [...facetHosts].find(([, current]) => current === facetHost)?.[0]
   const apis = extensionApis(
@@ -174,6 +182,7 @@ export async function loadExtensions(
     }
     facetCleanups.delete(facetHost)
     facetNotices.delete(facetHost)
+    facetDiagnostics.delete(facetHost)
   }
   const scope = (name: string): ExtensionHost => {
     const stops = new Set<() => void>()
@@ -190,7 +199,7 @@ export async function loadExtensions(
       need: <S>(api: Api<string, S>): S =>
         apis.need(facetHost, name, api, facetHosts.get(name) !== facetHost),
       want: <S>(api: Api<string, S>): S | undefined => apis.want(facetHost, name, api),
-      notice: (message) => {
+      notice: (message, options) => {
         // Each distinct message once per facet load: a notice raised by a commit watcher cannot loop through its event.
         // One raised while storage is closed is recorded when it opens.
         const messages = facetNotices.get(facetHost)
@@ -200,6 +209,7 @@ export async function loadExtensions(
           messages.set(message, open)
           if (open) log.notice(name, message)
         }
+        if (options?.diagnostic) facetDiagnostics.get(facetHost)!.add(message)
         notice(message)
         void Promise.resolve(changed()).catch((error: unknown) =>
           console.error('Publishing extension changes failed:', error),
@@ -267,6 +277,7 @@ export async function loadExtensions(
     facetReleasers.set(facetHost, new Set())
     facetCleanups.set(facetHost, new Set())
     facetNotices.set(facetHost, new Map())
+    facetDiagnostics.set(facetHost, new Set())
     return facetHost
   }
   const actions = new Map<string, Record<string, ExtensionAction>>()
@@ -823,7 +834,7 @@ export async function loadExtensions(
       diagnostics: () => [
         ...new Set([
           ...diagnostics,
-          ...[...facetNotices.values()].flatMap((messages) => [...messages.keys()]),
+          ...[...facetDiagnostics.values()].flatMap((messages) => [...messages]),
           ...apis.missing(),
           ...projectDiagnostics(host.projectRoot, host.userHome),
         ]),

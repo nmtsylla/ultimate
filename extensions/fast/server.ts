@@ -62,7 +62,7 @@ async function listedModels(host: FastHost): Promise<Set<string>> {
   const message = `Invalid fastModels ${JSON.stringify(value)}: expected ["openai-codex/<id>" or "openai/<id>", …]; fast mode is off`
   if (!reported.has(message)) {
     reported.add(message)
-    host.notice(message)
+    host.notice(message, { diagnostic: true })
   }
   return new Set()
 }
