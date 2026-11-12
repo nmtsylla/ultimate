@@ -13,6 +13,7 @@ import {
   defineTool,
   GenerationTask,
   hook,
+  ROOT_CONVERSATION_ID,
   ToolResultEntry,
 } from '@earendil-works/pi-durable'
 import type {
@@ -46,7 +47,17 @@ export const Prewalk = defineDoc<PrewalkState>({
   fork: 'initial',
   initial: () => ({}),
 })
-export const docs = [Prewalk]
+/** Automatic arming's durable setting and the last disabled interval's bounds, shared by every reload. */
+export const Automatic = defineDoc<{ enabled: boolean; disabledAt?: string; enabledAt?: string }>({
+  kind: 'prewalk.automatic',
+  checkpointWhen: () => false,
+  version: 1,
+  scope: 'conversation',
+  history: 'latest',
+  fork: 'initial',
+  initial: () => ({ enabled: false }),
+})
+export const docs = [Prewalk, Automatic]
 
 type Armed = NonNullable<PrewalkState['armed']>
 type Resolved = Omit<Armed, 'at'>
@@ -190,6 +201,18 @@ async function automaticTarget(host: ExtensionHost) {
   return merged.enabled ? merged.target : undefined
 }
 
+/** Record an automatic-arming transition only when it changes; the last disabled interval survives every reload. */
+async function automaticTransition(host: ExtensionHost, enabled: boolean) {
+  return host.harness().commit(async (tx) => {
+    const state = await tx.doc(Automatic, ROOT_CONVERSATION_ID)
+    if (state.enabled === enabled) return plain(state)
+    state.enabled = enabled
+    if (enabled) state.enabledAt = new Date().toISOString()
+    else state.disabledAt = new Date().toISOString()
+    return plain(state)
+  }, context)
+}
+
 /** A successful direct edit/write call's path, when it stays inside the conversation's own cwd. */
 function projectEdit(
   assistant: AssistantMessage | undefined,
@@ -273,16 +296,23 @@ export default function prewalk(host: ExtensionHost) {
   host.onOpen(async () => {
     if (registered) return
     try {
+      const requested = await automaticTarget(host)
+      const automatic = await automaticTransition(host, requested !== undefined)
       // #8088: disabled prewalk has no branch reactor; even its cursor commit delayed lineage's title watcher.
-      if ((await automaticTarget(host)) === undefined) return
+      if (requested === undefined) return
       registered = true
-      const enabledAt = new Date().toISOString()
       host.react(
         'arm-branches',
         [Branched],
         async (tx, event) => {
-          // The cursor survives a disabled window: advance over those old events without arming them.
-          if (event.at < enabledAt) return
+          // Advance over a disabled interval without arming it; enabled events on either side still replay.
+          if (
+            automatic.disabledAt &&
+            automatic.enabledAt &&
+            event.at >= automatic.disabledAt &&
+            event.at < automatic.enabledAt
+          )
+            return
           try {
             const target = await automaticTarget(host)
             if (target === undefined) return

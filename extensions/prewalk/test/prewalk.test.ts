@@ -62,12 +62,17 @@ async function fixture(project: JsonObject = {}) {
   const events = eventHost(() => opened!.harness, 'prewalk')
   const notices: string[] = []
   const openers: (() => Promise<void>)[] = []
+  const currentReactors: { start: () => Promise<void>; stop: () => Promise<void> }[] = []
   const actionHost = {
     ...prepared,
     harness: () => opened!.harness,
     projectSettings: async () => project,
     emit: events.emit,
-    react: events.react,
+    react: (...args: Parameters<typeof events.react>) => {
+      const registered = events.react(...args)
+      currentReactors.push(registered)
+      return registered
+    },
     onOpen: (callback: () => Promise<void>) => openers.push(callback),
     doc: (kind: string) => (kind === Plan.definition.kind ? Plan : events.doc(kind)),
     notice: (message: string) => notices.push(message),
@@ -93,10 +98,11 @@ async function fixture(project: JsonObject = {}) {
   opened = await prepared.open()
   const open = async () => {
     for (const callback of openers) await callback()
-    await events.start()
+    for (const reactor of currentReactors) await reactor.start()
   }
   const reload = async () => {
-    await events.stop()
+    for (const reactor of currentReactors) await reactor.stop()
+    currentReactors.splice(0)
     openers.splice(0)
     install()
     await open()
@@ -131,8 +137,14 @@ async function fixture(project: JsonObject = {}) {
     requested,
     actionHost,
     reload,
+    pause: async () => {
+      for (const reactor of currentReactors) await reactor.stop()
+    },
     emit: events.emit,
-    settled: events.settled,
+    settled: async () =>
+      (await events.eventLog.reactors()).every(
+        (reactor) => !reactor.running || (reactor.lag === 0 && reactor.failure === undefined),
+      ),
   }
 }
 
@@ -292,6 +304,18 @@ it('arms only new branch events when enabled, with project target over user targ
       armed: { target: fast, thinking: 'low', family: 'fast' },
     })
     expect(await f.opened.harness.snapshot(Prewalk, duringDisabled, context)).toBeUndefined()
+
+    await f.pause()
+    const pending = await branch('Enabled event pending across reload')
+    expect(await f.opened.harness.snapshot(Prewalk, pending, context)).toBeUndefined()
+    await f.reload()
+    await until(
+      async () => (await f.opened.harness.snapshot(Prewalk, pending, context))?.armed !== undefined,
+    )
+    await until(() => f.settled())
+    expect(await f.opened.harness.snapshot(Prewalk, pending, context)).toMatchObject({
+      armed: { target: fast, thinking: 'low', family: 'fast' },
+    })
     expect(f.notices).toEqual([])
   } finally {
     await f.close()

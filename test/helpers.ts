@@ -71,7 +71,11 @@ export function eventHost(harness: () => Harness, name: string) {
       events: readonly T[],
       handler: Reactor<EventData<T>>,
       options?: ReactOptions,
-    ) => void reactors.push(log.reactor(`${name}/${reactor}`, events, handler, options)),
+    ) => {
+      const registered = log.reactor(`${name}/${reactor}`, events, handler, options)
+      reactors.push(registered)
+      return registered
+    },
     eventLog: log.eventLog,
     start: () => Promise.all(reactors.map((reactor) => reactor.start())),
     stop: () => Promise.all(reactors.map((reactor) => reactor.stop())),
