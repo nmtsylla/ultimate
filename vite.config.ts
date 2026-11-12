@@ -206,7 +206,8 @@ export default defineConfig({
     // A hung hook or teardown fails within seconds and names its test, instead of stalling the run.
     hookTimeout: 5000,
     teardownTimeout: 5000,
-    maxWorkers: 8,
+    // #8364: more concurrent Vite servers exhausted the lander's memory; four keeps the suite within its time limit.
+    maxWorkers: 4,
     // Under an agent (AI_AGENT, CLAUDECODE, …) Vitest picks its minimal reporter, which prints nothing for passing
     // files; the lander's stall watchdog then stops a passing run that is silent for two minutes.
     reporters: ['default'],
