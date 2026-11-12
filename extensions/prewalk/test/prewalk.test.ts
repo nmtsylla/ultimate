@@ -11,16 +11,17 @@ import { CodingTools } from '@earendil-works/pi-durable/tools'
 import { configure } from '@earendil-works/pi-durable'
 import type { JsonObject } from '@earendil-works/pi-durable'
 import { expect, it } from 'vitest'
-import { context, prepareHarness } from '../server/harness.ts'
-import type { OpenHost } from '../server/harness.ts'
-import type { ExtensionHost } from '../server/extensions.ts'
-import { Metadata } from '../server/metadata.ts'
-import codingPlan from '../extensions/plan/server.ts'
-import { Plan } from '../extensions/plan/server.ts'
-import prewalk, { actions as prewalkActions, Prewalk } from '../extensions/prewalk/server.ts'
-import type { ActionContext } from '../server/actions.ts'
-import { Branched } from '../extensions/lineage/api.ts'
-import { eventHost, removeTemp, temp, until } from './helpers.ts'
+import { context, prepareHarness } from '../../../server/harness.ts'
+import type { OpenHost } from '../../../server/harness.ts'
+import type { ExtensionHost } from '../../../server/extensions.ts'
+import { Metadata } from '../../../server/metadata.ts'
+import codingPlan from '../../plan/server.ts'
+import { Plan } from '../../plan/server.ts'
+import prewalk, { actions as prewalkActions, Prewalk } from '../server.ts'
+import type { ActionContext } from '../../../server/actions.ts'
+import { Branched } from '../../lineage/api.ts'
+import { Family } from '../../models/api.ts'
+import { eventHost, removeTemp, temp, until } from '../../../test/helpers.ts'
 
 const strong = { provider: 'faux', modelId: 'faux-1' }
 const fast = { provider: 'faux', modelId: 'faux-fast' }
@@ -189,6 +190,7 @@ it('switches once after a planned successful project edit, and only then', async
     const agent = await f.opened.root.agent(context)
     expect(agent.model).toEqual(fast)
     expect(agent.thinkingLevel).toBe('low')
+    expect((await f.opened.harness.snapshot(Family, f.opened.root.id, context))?.name).toBe('fast')
     expect(f.requested.at(-1)).toBe('faux/faux-fast')
     const switched = await f.opened.harness.snapshot(Prewalk, f.opened.root.id, context)
     expect(switched).toMatchObject({

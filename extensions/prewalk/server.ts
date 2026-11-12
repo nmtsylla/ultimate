@@ -23,15 +23,16 @@ import type {
   ToolExecutionApi,
   Tx,
 } from '@earendil-works/pi-durable'
-import type { Context } from '@earendil-works/chord'
+import type { Context } from '@earendil-works/chord/context'
 import type { ExtensionHost } from '../../server/extensions.ts'
 import { implementAction } from '../../lib/actions.ts'
 import type { ActionInput } from '../../lib/actions.ts'
-import { hasLogin, hostDefaultModel, previewModel } from '../../lib/agents.ts'
+import { hasLogin, hostDefault, previewModel } from '../../lib/agents.ts'
 import { definitionRuns, refName, refOf } from '../../lib/families.ts'
 import { readFamilies } from '../../lib/families-settings.ts'
 import { readSettings, userSettingsPath } from '../../lib/settings.ts'
 import { Branched } from '../lineage/api.ts'
+import { Family } from '../models/api.ts'
 import type { Plan } from '../plan/refs.ts'
 import { ArmAction, DisarmAction, PrewalkDoc, StatusAction } from './refs.ts'
 import type { PrewalkState } from './refs.ts'
@@ -68,15 +69,18 @@ async function resolveTarget(
       `Unknown family: ${target}. Families: ${Object.keys(families.families).join(', ')}`,
     )
   const runs = definitionRuns(pinned ? { model: pinned } : { family: target }, families)
+  const fallback = runs.model ? undefined : await hostDefault(host)
   // A preview pins every agent to its one model; prewalk must not escape it either.
   const preview = previewModel()
-  const model = preview ?? runs.model ?? (await hostDefaultModel(host))
+  const model = preview ?? runs.model ?? fallback?.model
   if (!model || !hasLogin(host.modelRuntime.getAvailableSnapshot(), model))
     throw new Error(
       `No login for ${model ? refName(model) : target}${runs.family ? ` (family ${runs.family})` : ''}`,
     )
   const descriptor = host.modelRuntime.getModel(model.provider, model.modelId)
-  const wanted = preview ? agent.thinkingLevel : (runs.thinking ?? agent.thinkingLevel)
+  const wanted = preview
+    ? agent.thinkingLevel
+    : (runs.thinking ?? (runs.model ? agent.thinkingLevel : fallback?.thinkingLevel))
   const thinking = wanted && descriptor ? clampThinkingLevel(descriptor, wanted) : wanted
   return {
     target: model,
@@ -242,6 +246,7 @@ async function switchAfterEdit(
     if (trigger === undefined || !agent.model) return
     const from = refName(agent.model)
     await configure(tx, id, { model: armed.target, thinkingLevel: armed.thinking ?? null })
+    ;(await tx.doc(Family, id)).name = armed.family ?? null
     state.switched = {
       from,
       to: refName(armed.target),
