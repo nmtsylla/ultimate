@@ -18,7 +18,7 @@ import type { ServerEvents, SystemInfo } from '../shared/protocol.ts'
 import type { Api } from '../shared/extension-api.ts'
 import type { EventData, EventToken } from '../shared/events.ts'
 import { EventFeed, eventLog } from '../server/events.ts'
-import type { Reactor } from '../server/events.ts'
+import type { Reactor, ReactOptions } from '../server/events.ts'
 
 vi.mock('@earendil-works/pi-ai/providers/faux', async (importOriginal) => {
   const original = await importOriginal<typeof import('@earendil-works/pi-ai/providers/faux')>()
@@ -70,7 +70,8 @@ export function eventHost(harness: () => Harness, name: string) {
       reactor: string,
       events: readonly T[],
       handler: Reactor<EventData<T>>,
-    ) => void reactors.push(log.reactor(`${name}/${reactor}`, events, handler)),
+      options?: ReactOptions,
+    ) => void reactors.push(log.reactor(`${name}/${reactor}`, events, handler, options)),
     eventLog: log.eventLog,
     start: () => Promise.all(reactors.map((reactor) => reactor.start())),
     stop: () => Promise.all(reactors.map((reactor) => reactor.stop())),

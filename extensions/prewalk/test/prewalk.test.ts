@@ -72,7 +72,8 @@ async function fixture(project: JsonObject = {}) {
     doc: (kind: string) => (kind === Plan.definition.kind ? Plan : events.doc(kind)),
     notice: (message: string) => notices.push(message),
   } as unknown as ExtensionHost
-  prepared.registry.install(prewalk(actionHost))
+  const install = () => prepared.registry.install(prewalk(actionHost))
+  install()
   const requested: string[] = []
   const route: FauxResponseFactory = (transcript, _options, _state, model) => {
     requested.push(`${model.provider}/${model.id}`)
@@ -90,11 +91,17 @@ async function fixture(project: JsonObject = {}) {
   }
   prepared.faux!.setResponses([route])
   opened = await prepared.open()
-  const reload = async () => {
+  const open = async () => {
     for (const callback of openers) await callback()
     await events.start()
   }
-  await reload()
+  const reload = async () => {
+    await events.stop()
+    openers.splice(0)
+    install()
+    await open()
+  }
+  await open()
   await opened.root.configure({ model: strong, thinkingLevel: 'high' }, context)
   const call = async (name: string, args: JsonObject) => {
     const submission = await opened.root.submit(
@@ -259,6 +266,32 @@ it('arms only new branch events when enabled, with project target over user targ
     expect(await f.opened.harness.snapshot(Prewalk, enabled, context)).toMatchObject({
       armed: { target: fast, thinking: 'low', family: 'fast' },
     })
+    expect(await f.opened.harness.snapshot(Prewalk, disabled, context)).toBeUndefined()
+
+    await writeFile(
+      join(f.userHome, '.ultimate/settings.json'),
+      JSON.stringify({ prewalk: { enabled: false } }),
+    )
+    await f.reload()
+    const duringDisabled = await branch('Created while disabled')
+    await until(() => f.settled())
+    expect(await f.opened.harness.snapshot(Prewalk, duringDisabled, context)).toBeUndefined()
+
+    await writeFile(
+      join(f.userHome, '.ultimate/settings.json'),
+      JSON.stringify({ prewalk: { enabled: true, target: 'missing/model' } }),
+    )
+    await f.reload()
+    const reenabled = await branch('Created after re-enabling')
+    await until(
+      async () =>
+        (await f.opened.harness.snapshot(Prewalk, reenabled, context))?.armed !== undefined,
+    )
+    await until(() => f.settled())
+    expect(await f.opened.harness.snapshot(Prewalk, reenabled, context)).toMatchObject({
+      armed: { target: fast, thinking: 'low', family: 'fast' },
+    })
+    expect(await f.opened.harness.snapshot(Prewalk, duringDisabled, context)).toBeUndefined()
     expect(f.notices).toEqual([])
   } finally {
     await f.close()
