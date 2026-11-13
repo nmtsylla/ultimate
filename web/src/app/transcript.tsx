@@ -50,8 +50,8 @@ import {
 } from '../sdk/hooks.ts'
 import { entryRenderers, messageItems, toolLine } from '../sdk/registry.ts'
 import { covered } from '../sdk/resume.ts'
-import { ExtensionBoundary, Provided, Slot } from './boundary.tsx'
-import { ParkedRuns, RunStart } from '../sdk/types.ts'
+import { ExtensionBoundary, Provided, Rendered, Slot } from './boundary.tsx'
+import { EmptyTranscript, ParkedRuns, RunStart } from '../sdk/types.ts'
 import type { CompactSummaryProps } from '../sdk/types.ts'
 import { MessageActions } from './message-actions.tsx'
 import { textOf, UserView } from './user-turn.tsx'
@@ -570,7 +570,16 @@ function TranscriptEntries() {
           )}
         </div>
       )}
-      {!loading && visible.length === 0 && !partial && <EmptyState />}
+      {!loading &&
+        visible.length === 0 &&
+        !partial &&
+        (id === undefined ? (
+          <EmptyState />
+        ) : (
+          <Rendered input={{ conversation: id }} point={EmptyTranscript}>
+            <EmptyState />
+          </Rendered>
+        ))}
       {!loading && visible.length > 0 && cursor === undefined && <Slot name="transcript.start" />}
       {threaded.map((item, index) => {
         const last = index === threaded.length - 1
@@ -1161,7 +1170,7 @@ function AssistantNotice({ message }: { message: AssistantMessage }) {
     stopReason === 'error' ? (
       <div className="flex items-start gap-1.5 text-error">
         <CircleAlertIcon className="mt-0.5 size-3.5 shrink-0" />
-        <span className="break-words">
+        <span className="min-w-0 break-words">
           {message.errorMessage ?? 'The provider returned an error'}
         </span>
       </div>
