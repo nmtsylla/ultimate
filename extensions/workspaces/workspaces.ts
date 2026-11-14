@@ -137,21 +137,35 @@ async function atRisk(
   const branch = (await git(workspace.path, 'branch', '--list', workspace.branch))
     ? [workspace.branch]
     : []
+  // The target may be gone: a branch renamed or deleted after it landed. Nothing can be unlanded
+  // against a branch that does not exist, so count nothing instead of failing the whole conclude.
+  const targetExists = await git(
+    workspace.path,
+    'rev-parse',
+    '--verify',
+    '--quiet',
+    workspace.target,
+  ).then(
+    () => true,
+    () => false,
+  )
   return {
     id,
     uncommitted: (await git(workspace.path, 'status', '--porcelain')).split('\n').filter(Boolean)
       .length,
-    unlanded: Number(
-      await git(
-        workspace.path,
-        'rev-list',
-        '--count',
-        'HEAD',
-        '--not',
-        workspace.target,
-        ...branch,
-      ),
-    ),
+    unlanded: targetExists
+      ? Number(
+          await git(
+            workspace.path,
+            'rev-list',
+            '--count',
+            'HEAD',
+            '--not',
+            workspace.target,
+            ...branch,
+          ),
+        )
+      : 0,
   }
 }
 const held = (
