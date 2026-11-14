@@ -244,7 +244,7 @@ it('switches once after a planned successful project edit, and only then', async
   }
 })
 
-it('arms only new branch events when enabled, with project target over user target', async () => {
+it('arms new branch events by default and only while enabled, with project target over user target', async () => {
   const project: JsonObject = {}
   const f = await fixture(project)
   try {
@@ -260,9 +260,15 @@ it('arms only new branch events when enabled, with project target over user targ
         return created.id
       }, context)
 
-    const disabled = await branch('Disabled by default')
+    const byDefault = await branch('Enabled by default')
+    await until(
+      async () =>
+        (await f.opened.harness.snapshot(Prewalk, byDefault, context))?.armed !== undefined,
+    )
     await until(() => f.settled())
-    expect(await f.opened.harness.snapshot(Prewalk, disabled, context)).toBeUndefined()
+    expect(await f.opened.harness.snapshot(Prewalk, byDefault, context)).toMatchObject({
+      armed: { target: fast, thinking: 'low', family: 'fast' },
+    })
 
     await writeFile(
       join(f.userHome, '.ultimate/settings.json'),
@@ -278,7 +284,6 @@ it('arms only new branch events when enabled, with project target over user targ
     expect(await f.opened.harness.snapshot(Prewalk, enabled, context)).toMatchObject({
       armed: { target: fast, thinking: 'low', family: 'fast' },
     })
-    expect(await f.opened.harness.snapshot(Prewalk, disabled, context)).toBeUndefined()
 
     await writeFile(
       join(f.userHome, '.ultimate/settings.json'),

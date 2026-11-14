@@ -19,10 +19,10 @@ The handoff fires in the tool-result round of the first call that is all of thes
 
 ## Automatic arming
 
-`prewalk` in settings arms every **new lineage branch** as it is created — existing branches never become armed retroactively:
+Prewalk arms every **new lineage branch** as it is created, with the `fast` family unless settings say otherwise — existing branches never become armed retroactively. Turn it off in settings:
 
 ```json
-{ "prewalk": { "enabled": true, "target": "fast" } }
+{ "prewalk": { "enabled": false } }
 ```
 
-`enabled` defaults to `false`; `target` defaults to `"fast"` and takes a family name or `provider/modelId`. Project settings apply over user settings, field by field. A target that cannot be armed (no login, unknown family) leaves the branch usable and writes a notice.
+`enabled` defaults to `true`; `target` defaults to `"fast"` and takes a family name or `provider/modelId`. Project settings apply over user settings, field by field. A target that cannot be armed (no login, unknown family) leaves the branch usable and writes a notice.

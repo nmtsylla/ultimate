@@ -174,7 +174,7 @@ export const actions = {
   }),
 }
 
-/** The automatic-arming setting, layered defaults → user → project. Automatic arming is off unless explicitly enabled. */
+/** The automatic-arming setting, layered defaults → user → project. Automatic arming is on unless explicitly disabled. */
 async function automaticTarget(host: ExtensionHost) {
   const user = (await readSettings(userSettingsPath(host.userHome))).prewalk
   const project = (await host.projectSettings()).prewalk
@@ -193,7 +193,7 @@ async function automaticTarget(host: ExtensionHost) {
     }
   }
   const merged = {
-    enabled: false,
+    enabled: true,
     target: 'fast',
     ...layer(user, 'user settings:'),
     ...layer(project, 'project settings:'),
