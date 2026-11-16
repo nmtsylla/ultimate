@@ -25,7 +25,6 @@ import { HealthApi } from '../health/api.ts'
 import type { MemoryDoc, RootsDoc, TallyDoc } from '../lineage/refs.ts'
 import { Standing } from '../subagents/api.ts'
 import { TailscaleApi } from '../tailscale/api.ts'
-import { SetupApi } from './api.ts'
 import { CheckAction } from './refs.ts'
 import type { SetupIssue } from './refs.ts'
 
@@ -469,9 +468,6 @@ export default function setup(host: ExtensionHost) {
     }
     return cache.issues
   }
-  host.implement(SetupApi, {
-    warnings: async () => (await current()).filter((issue) => issue.status === 'warn'),
-  })
   return defineExtension({
     name: 'setup',
     hooks: [
