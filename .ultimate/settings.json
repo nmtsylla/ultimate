@@ -1,7 +1,6 @@
 {
   "extensions": {
-    "enable": ["mission-control"],
-    "disable": ["voice-live"]
+    "disable": ["voice-live", "mission-control"]
   },
   "modelFamilies": {
     "families": {
