@@ -7,7 +7,7 @@
 // or bin/ (or packages were installed) — that needs a host restart.
 
 import { spawnSync } from 'node:child_process';
-import { existsSync } from 'node:fs';
+import { existsSync, readFileSync, writeFileSync } from 'node:fs';
 
 const REPO = '/home/bsylla/ultimate';
 const LOCK = `${REPO}/.git/ultimate-update.lock`;
@@ -16,6 +16,24 @@ const HOUR = 60 * MIN;
 
 const log = (msg) => console.log(`${new Date().toISOString()} ${msg}`);
 const fire = (msg) => console.log(`FIRE ${msg}`);
+
+// What was reported last, so a conflict that cannot be merged by hand here wakes @ultimate once, not every day.
+const STATE = `${process.env.HOME}/.ultimate/sync-upstream-state.json`;
+const readState = () => {
+  try {
+    return JSON.parse(readFileSync(STATE, 'utf8'));
+  } catch {
+    // No state yet, or one this script cannot read: report as if nothing was reported.
+    return {};
+  }
+};
+const writeState = (value) => {
+  try {
+    writeFileSync(STATE, JSON.stringify(value));
+  } catch (error) {
+    log(`state not saved (${error.message}); the next conflict reports again`);
+  }
+};
 
 function sh(cmd, args) {
   const r = spawnSync(cmd, args, {
@@ -97,7 +115,29 @@ async function onePass() {
     return log(`up to date ${short()}`);
   }
 
-  // 6. merge; on conflict report the files, abort, and leave main untouched.
+  // 6. a merge that would conflict is reported once, not daily: the fix is a branch that resolves it, not a retry.
+  const probe = git('merge-tree', '--write-tree', 'HEAD', 'upstream/main');
+  if (!probe.ok) {
+    const conflicts = [...new Set(
+      lines(probe.out).flatMap((line) => {
+        const match = /^\d{6} [0-9a-f]+ [123]\t(.+)$/.exec(line);
+        return match ? [match[1]] : [];
+      }),
+    )];
+    const upstreamHead = git('rev-parse', 'upstream/main').out;
+    const state = readState();
+    const reportedRecently = (state.lastConflictAt ?? 0) > Date.now() - 7 * 24 * HOUR;
+    if (state.lastConflictUpstream === upstreamHead && reportedRecently)
+      return log(
+        `upstream ${upstreamHead.slice(0, 7)} still conflicts with main — reported already; integrating it needs a branch`,
+      );
+    writeState({ ...state, lastConflictUpstream: upstreamHead, lastConflictAt: Date.now() });
+    return fire(
+      `upstream ${upstreamHead.slice(0, 7)} merges with conflicts in: ${first(conflicts || ['unknown paths'])} — nothing merged, main is at ${short()}; it needs a branch integration`,
+    );
+  }
+
+  // 7. merge; a conflict here is a race against the probe above, so it still aborts cleanly.
   const before = git('rev-parse', 'HEAD').out;
   const merged = git('merge', '--no-edit', 'upstream/main');
   if (!merged.ok) {
