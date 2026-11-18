@@ -60,6 +60,17 @@ What the user picked and typed on a card lives in durable UI state, by message (
 surface for another, a reload or another window or device shows it again where they left it; it goes as soon as the
 message settles (answered, dismissed, or settled for them by @ultimate).
 
+## Leaving the page inside the undo window
+
+A send during the undo window is a `fetch` with `keepalive`, which Chromium sometimes drops even after the handler ran
+(#21848's probe: about one app-shaped unload in six on a loaded host, one in twenty on a quiet one). So the card also
+writes the committed answer into `localStorage` (`ext.questions.pending-answers`, by message id) the moment the undo
+window starts, and takes it back on Undo or once the send resolves. On the next load `PendingAnswers` (`web.tsx`) sends
+whatever is still pending, so the answer lands whether or not the unload's request survived. Exactly one lands either
+way: a question's admission refuses a second reply, so a resend of an answer that did arrive is refused and dropped,
+not doubled. A pending answer older than ten minutes (`PENDING_ANSWER_EXPIRY_MS`) is dropped rather than answered late.
+Side-chat's pinned question sends through its own action and keeps its own flow.
+
 ## Where open questions wait
 
 The Inbox (`extensions/inbox`) lists every message that waits on the user, oldest first, and shows this card under the

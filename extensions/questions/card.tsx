@@ -26,6 +26,7 @@ import type { Question } from '../messages/refs.ts'
 import { MessagesDoc } from '../messages/ui.tsx'
 import { keyCard, openQuestions, waitsOnUser } from './open.tsx'
 import type { Message } from './open.tsx'
+import { removePendingAnswer, savePendingAnswer } from './pending.ts'
 import { QuestionItem } from './question.tsx'
 import { AnswerAction, DismissAction } from './refs.ts'
 import type { Answer } from './refs.ts'
@@ -102,6 +103,14 @@ export function MessageQuestions({
       submit={(answers, note, keepalive) =>
         answer({ answers, ...(note ? { note } : {}) }, keepalive)
       }
+      {...(answerWith
+        ? {}
+        : {
+            pending: {
+              save: (reply: Reply) => savePendingAnswer(message.id, reply),
+              clear: () => removePendingAnswer(message.id),
+            },
+          })}
       reply={(text) => answer({ text })}
       actions={
         withActions ? (
@@ -344,12 +353,14 @@ function Card({
   dismiss,
   actions,
   sendLabel,
+  pending,
   className = 'border-t border-border/60',
 }: {
   card: string
   questions: Question[]
   keys: boolean
   submit: (answers: Answer[], note?: string, keepalive?: boolean) => Promise<unknown>
+  pending?: { save: (reply: Reply) => void; clear: () => void }
   reply: (text: string) => Promise<unknown>
   dismiss: () => Promise<unknown>
   actions: ReactNode
@@ -452,12 +463,16 @@ function Card({
     committed.current = true
     cancelAdvanceAfterCheck.current?.()
     setLockedIn({ drafts, note })
+    pending?.save({ answers: ready, ...(extra ? { note: extra } : {}) })
     const fire = (keepalive = false) => {
       undoWindowSend.current = undefined
       setPhase('sending')
       setError(undefined)
       submit(ready, extra || undefined, keepalive).then(
-        () => setPhase('sent'),
+        () => {
+          pending?.clear()
+          setPhase('sent')
+        },
         (failure: unknown) => {
           unlock()
           setError(errorMessage(failure))
@@ -478,6 +493,7 @@ function Card({
     if (!undoWindowSend.current) return
     undoWindowSend.current.cancel()
     undoWindowSend.current = undefined
+    pending?.clear()
     unlock()
   }
 
