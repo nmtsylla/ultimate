@@ -1,15 +1,17 @@
 import { expect, it } from 'vitest'
-import { landerRows } from '../../listed.ts'
+import { landerRows, neverConcludedStandingAgent } from '../../listed.ts'
 
 const row = (id: number, label?: string) => ({ id, ...(label && { label }) })
 
 it('keeps the lander the project knows as its one standing row and sets older lander-labelled conversations aside', () => {
-  const { landerId, stray } = landerRows(
-    [row(1, 'agent'), row(7, 'lander'), row(12, 'lander'), row(13)],
-    [12],
-  )
+  const topLevel = [row(1, 'agent'), row(7, 'lander'), row(12, 'lander'), row(13)]
+  const { landerId, stray } = landerRows(topLevel, [12])
   expect(landerId).toBe(12)
   expect([...stray]).toEqual([7])
+  expect(topLevel.filter((candidate) => neverConcludedStandingAgent(candidate, landerId))).toEqual([
+    row(1, 'agent'),
+    row(12, 'lander'),
+  ])
 })
 
 it('falls back to the newest lander-labelled conversation when the project knows none', () => {
@@ -18,8 +20,6 @@ it('falls back to the newest lander-labelled conversation when the project knows
   expect([...stray]).toEqual([7])
 })
 
-it('sets no row aside when the only lander-labelled conversation is a single one', () => {
-  const { landerId, stray } = landerRows([row(3, 'lander'), row(4, 'branch')], [3])
-  expect(landerId).toBe(3)
-  expect([...stray]).toEqual([])
+it('pins any lander-labelled conversation while no lander row resolves', () => {
+  expect(neverConcludedStandingAgent(row(7, 'lander'), undefined)).toBe(true)
 })

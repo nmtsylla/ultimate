@@ -210,7 +210,7 @@ export function reportSummaryFailure(
   if (failures === 1) host.notice(`Summary request to ${model} failed: ${cause}`)
   else
     host.notice(
-      `Summaries from ${model} keep failing (${failures} in a row): ${cause}. Titles, abstracts and a landing's memory stay unwritten until it answers.`,
+      `Summaries from ${model} keep failing (${failures} in a row): ${cause}. Titles, abstracts and summaries stay unwritten until it answers.`,
       { diagnostic: true },
     )
 }

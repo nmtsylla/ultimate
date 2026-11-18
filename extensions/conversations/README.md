@@ -158,8 +158,8 @@ State survives reloads and restarts. Failed requests preserve the last summary a
 Each request names a session of its own (`summary-<conversation>`), which opencode.ai's gateway requires before it routes
 one (`x-opencode-session`, otherwise `400 MissingSessionID`), and asks for no server-side thread continuation.
 A failure is reported in a notice rather than only in its discard entry: the first as a toast, and from the second one
-in a row for the same model as a diagnostic, because a model that keeps failing leaves titles, summaries, abstracts
-and a landing's memory unwritten until someone fixes it.
+in a row for the same model as a diagnostic, because a model that keeps failing leaves titles, summaries and
+abstracts unwritten until someone fixes it.
 When the summary model is unavailable in the model runtime, summaries and assessments are skipped quietly, without a
 task. A task that finds no available model before it chose one settles quietly too: no discard entry, no error status.
 

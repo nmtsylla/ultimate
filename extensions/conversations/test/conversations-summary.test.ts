@@ -775,12 +775,12 @@ it('reports a failing summary model as a toast, then as a diagnostic while it ke
   // One failed request is a toast: it happened, and the next reply asks again.
   await until(() => fixture.notices.length === 1)
   expect(fixture.notices).toEqual([`Summary request to openai-codex/gpt-6-luna failed: ${failure}`])
-  // A model that keeps failing leaves titles, abstracts and a landing's memory unwritten: it stays in Diagnostics.
+  // A model that keeps failing leaves titles, abstracts and summaries unwritten: it stays in Diagnostics.
   fixture.generated.mockRejectedValueOnce(new Error(failure))
   await fixture.exchange()
   await until(() => fixture.notices.length === 2)
   expect(fixture.notices[1]).toBe(
-    `Summaries from openai-codex/gpt-6-luna keep failing (2 in a row): ${failure}. Titles, abstracts and a landing's memory stay unwritten until it answers.`,
+    `Summaries from openai-codex/gpt-6-luna keep failing (2 in a row): ${failure}. Titles, abstracts and summaries stay unwritten until it answers.`,
   )
   // An answer clears the streak, so a later failure is a toast again rather than a stale diagnostic.
   await fixture.exchange()

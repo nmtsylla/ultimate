@@ -59,7 +59,7 @@ import type { KeptWork } from '../conversations/types.ts'
 import { LanderState } from './lander.tsx'
 import { StandingPhase, WaitingOnUser } from './ultimate.tsx'
 import { useShell, useSidebarState } from './state.tsx'
-import { landerRows, topLevelRows } from './listed.ts'
+import { landerRows, neverConcludedStandingAgent, topLevelRows } from './listed.ts'
 import { UnderUltimate, Unlisted } from './ui.tsx'
 
 const useShownId = () => useStore((state) => state.view?.conversation.id ?? state.requested)
@@ -90,12 +90,6 @@ function workingByTop(conversations: readonly ConversationSummary[]) {
 
 const newestInputFirst = (a: ConversationSummary, b: ConversationSummary) =>
   (b.inputAt ?? 0) - (a.inputAt ?? 0) || b.id - a.id
-
-const neverConcludedStandingAgent = (conversation: ConversationSummary, landerId?: number) =>
-  (conversation.label === 'lander' && (landerId === undefined || conversation.id === landerId)) ||
-  (conversation.label === 'agent' &&
-    conversation.parentConversationId === undefined &&
-    conversation.ownerTaskId === undefined)
 
 export function Conversations() {
   const ultimateId = useDocOf(ROOT, StandingDoc)?.ultimate

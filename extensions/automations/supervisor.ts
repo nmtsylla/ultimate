@@ -175,7 +175,7 @@ export function supervisor(
         parsed = undefined
       }
       if (parsed) found.set(entry.name, parsed)
-      else host.notice(`Automation ${entry.name}: invalid ${MANIFEST}`)
+      else host.notice(`Automation ${entry.name}: invalid ${MANIFEST}`, { diagnostic: true })
     }
     return found
   }

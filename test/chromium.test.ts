@@ -71,3 +71,16 @@ it('takes the first Chromium that exists, falling through a stale override and f
   ).toBe('/usr/bin/chromium')
   expect(await chromiumBinary({}, home, 'linux', () => Promise.reject())).toBeUndefined()
 })
+
+it('prefers a Playwright Chromium over Google Chrome in /Applications', async () => {
+  const home = await temp()
+  const cache = join(home, '.cache/ms-playwright')
+  await mkdir(join(cache, 'chromium-1248'), { recursive: true })
+  const playwright = join(cache, 'chromium-1248/chrome-linux64/chrome')
+  const chrome = '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome'
+  const installed = new Set([chrome, playwright])
+  const exists = (path: string) => (installed.has(path) ? Promise.resolve() : Promise.reject())
+  expect(await chromiumBinary({}, home, 'linux', exists)).toBe(playwright)
+  installed.delete(playwright)
+  expect(await chromiumBinary({}, home, 'linux', exists)).toBe(chrome)
+})

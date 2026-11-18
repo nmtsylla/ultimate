@@ -86,7 +86,7 @@ const reported = new Set<string>()
 const once = (host: Pick<SummaryModelHost, 'notice'>, message: string) => {
   if (reported.has(message)) return
   reported.add(message)
-  host.notice(message)
+  host.notice(message, { diagnostic: true })
 }
 
 export async function summaryModelStatus(host: SummaryModelHost): Promise<SummaryModelStatus> {
