@@ -463,12 +463,13 @@ function Card({
     committed.current = true
     cancelAdvanceAfterCheck.current?.()
     setLockedIn({ drafts, note })
-    pending?.save({ answers: ready, ...(extra ? { note: extra } : {}) })
+    const committedReply: Reply = { answers: ready, ...(extra ? { note: extra } : {}) }
+    pending?.save(committedReply)
     const fire = (keepalive = false) => {
       undoWindowSend.current = undefined
       setPhase('sending')
       setError(undefined)
-      submit(ready, extra || undefined, keepalive).then(
+      submit(committedReply.answers ?? [], committedReply.note, keepalive).then(
         () => {
           pending?.clear()
           setPhase('sent')

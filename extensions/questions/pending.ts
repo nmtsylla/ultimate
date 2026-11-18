@@ -1,56 +1,75 @@
+import { meansNone } from '../../lib/errors.ts'
 import type { Reply } from './refs.ts'
 
 export const PENDING_ANSWERS_KEY = 'ext.questions.pending-answers'
 
 export const PENDING_ANSWER_EXPIRY_MS = 10 * 60 * 1000
 
-export type PendingAnswer = Reply & { at: number }
+type PendingAnswer = Reply & { at: number }
 
-type Storage = Pick<globalThis.Storage, 'getItem' | 'setItem'>
+export const pendingAnswerKey = (messageId: number) => `${PENDING_ANSWERS_KEY}.${messageId}`
 
-const parse = (raw: string | null): Record<string, PendingAnswer> =>
-  raw ? (JSON.parse(raw) as Record<string, PendingAnswer>) : {}
-
-const read = (storage: Storage): Record<string, PendingAnswer> => {
+function quietly(write: () => void) {
   try {
-    return parse(storage.getItem(PENDING_ANSWERS_KEY))
-  } catch {
-    return {}
+    write()
+  } catch (error) {
+    meansNone(error)
   }
 }
 
-const write = (storage: Storage, pending: Record<string, PendingAnswer>) =>
-  storage.setItem(PENDING_ANSWERS_KEY, JSON.stringify(pending))
-
-export function savePendingAnswer(
-  messageId: number,
-  reply: Reply,
-  storage: Storage = localStorage,
-) {
-  write(storage, { ...read(storage), [String(messageId)]: { ...reply, at: Date.now() } })
+export function savePendingAnswer(messageId: number, reply: Reply) {
+  quietly(() =>
+    localStorage.setItem(
+      pendingAnswerKey(messageId),
+      JSON.stringify({ ...reply, at: Date.now() } satisfies PendingAnswer),
+    ),
+  )
 }
 
-export function removePendingAnswer(messageId: number, storage: Storage = localStorage) {
-  const pending = read(storage)
-  if (pending[String(messageId)] === undefined) return
-  delete pending[String(messageId)]
-  write(storage, pending)
+export function removePendingAnswer(messageId: number) {
+  quietly(() => localStorage.removeItem(pendingAnswerKey(messageId)))
+}
+
+function readPendingAnswer(messageId: number): PendingAnswer | undefined {
+  try {
+    const stored = localStorage.getItem(pendingAnswerKey(messageId))
+    return stored ? (JSON.parse(stored) as PendingAnswer) : undefined
+  } catch (error) {
+    return meansNone(error)
+  }
+}
+
+function pendingAnswerIds() {
+  const ids: number[] = []
+  try {
+    for (let index = 0; index < localStorage.length; index += 1) {
+      const key = localStorage.key(index)
+      if (!key?.startsWith(`${PENDING_ANSWERS_KEY}.`)) continue
+      const id = Number(key.slice(PENDING_ANSWERS_KEY.length + 1))
+      if (Number.isSafeInteger(id)) ids.push(id)
+    }
+  } catch (error) {
+    meansNone(error)
+  }
+  return ids
 }
 
 export async function sendPendingAnswers(
+  open: (messageId: number) => boolean,
   answer: (messageId: number, reply: Reply) => Promise<unknown>,
-  storage: Storage = localStorage,
   now = Date.now(),
 ) {
-  for (const [id, { at, ...reply }] of Object.entries(read(storage))) {
-    const messageId = Number(id)
-    if (now - at > PENDING_ANSWER_EXPIRY_MS) removePendingAnswer(messageId, storage)
+  for (const messageId of pendingAnswerIds()) {
+    const pending = readPendingAnswer(messageId)
+    if (!pending) continue
+    const { at, ...reply } = pending
+    if (now - at > PENDING_ANSWER_EXPIRY_MS || !open(messageId)) removePendingAnswer(messageId)
     else if (
       await answer(messageId, reply).then(
         () => true,
         () => false,
       )
     )
-      removePendingAnswer(messageId, storage)
+      removePendingAnswer(messageId)
   }
 }

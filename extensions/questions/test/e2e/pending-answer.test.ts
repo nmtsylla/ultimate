@@ -1,8 +1,8 @@
 // An answer committed inside a question card's undo window when the page goes away: the pagehide send is a keepalive
 // request Chromium sometimes drops (#21848's probe lost it about once in six app-shaped unloads), so the card keeps the
 // answer in localStorage and the next load sends it. Here the unload's send is made to fail for certain by stubbing the
-// page's own fetch, and the reload's load has to carry the answer exactly once; the second case is the same reload with
-// the real send, which must not become two answers.
+// page's own fetch, and the reload's load has to carry the answer exactly once. The other cases cover the ways a kept
+// answer must not become a second reply: Undo, a send that went out before the page died, and a question that settled.
 import { join, resolve } from 'node:path'
 import { fauxAssistantMessage, fauxToolCall } from '@earendil-works/pi-ai/providers/faux'
 import type { FauxResponseFactory } from '@earendil-works/pi-ai/providers/faux'
@@ -16,6 +16,7 @@ import { browserBinary } from '../../../browser/server.ts'
 import { Messages } from '../../../messages/api.ts'
 import { context } from '../../../../server/harness.ts'
 import { fauxServer, post, removeTemp, temp, until } from '../../../../test/helpers.ts'
+import { pendingAnswerKey } from '../../pending.ts'
 
 const questions: JsonValue[] = [
   {
@@ -84,13 +85,13 @@ async function openCard() {
   return { page, card, answers, message: asked.id }
 }
 
-const pending = (page: Page) =>
-  page.evaluate(() => localStorage.getItem('ext.questions.pending-answers'))
+const kept = (page: Page, message: number) =>
+  page.evaluate((key) => localStorage.getItem(key), pendingAnswerKey(message))
 
-async function sendThenLeave(page: Page, card: Locator) {
+async function sendThenLeave(page: Page, card: Locator, message: number) {
   await card.getByRole('button', { name: 'Send', exact: true }).click()
   await card.getByRole('button', { name: 'Undo' }).waitFor()
-  expect(await pending(page)).toContain('answers')
+  expect(await kept(page, message)).toContain('answers')
   await page.reload()
 }
 
@@ -99,7 +100,7 @@ function keepAnswerThroughUnload(page: Page) {
 }
 
 it('sends an answer whose pagehide request never reached the server', async () => {
-  const { page, card, answers } = await openCard()
+  const { page, card, answers, message } = await openCard()
   // This document's sends to the answer action fail the way a dropped keepalive request does; the next load fetches.
   await page.evaluate((path) => {
     const real = window.fetch
@@ -111,52 +112,65 @@ it('sends an answer whose pagehide request never reached the server', async () =
         : real(input, init)
     }
   }, ANSWER)
-  await sendThenLeave(page, card)
+  await sendThenLeave(page, card, message)
   await until(async () => (await answers()).length > 0)
   const landed = await answers()
   expect(landed).toHaveLength(1)
   expect(landed[0].text).toBe('1a. Which way?: this way')
-  await until(async () => (await pending(page)) === '{}')
+  await until(async () => (await kept(page, message)) === null)
   // Nothing waits any more: another load has nothing to send.
   await page.reload()
   await page.waitForTimeout(1000)
   expect(await answers()).toHaveLength(1)
 })
 
+it('sends nothing on the next load after Undo', async () => {
+  const { page, card, answers, message } = await openCard()
+  await card.getByRole('button', { name: 'Send', exact: true }).click()
+  await card.getByRole('button', { name: 'Undo' }).click()
+  await card.getByRole('button', { name: 'Send', exact: true }).waitFor()
+  expect(await kept(page, message)).toBeNull()
+  await page.reload()
+  await page.waitForTimeout(1000)
+  expect(await answers()).toHaveLength(0)
+})
+
 it('does not answer twice when the page comes back after its send went out', async () => {
-  const { page, card, answers } = await openCard()
+  const { page, card, answers, message } = await openCard()
   await card.getByRole('button', { name: 'Send', exact: true }).click()
   await card.getByRole('button', { name: 'Undo' }).waitFor()
   // The unload with the document still alive: this send reaches the server and resolves, and the card takes the kept
   // answer back before the page goes.
   await keepAnswerThroughUnload(page)
   await until(async () => (await answers()).length > 0)
-  await until(async () => (await pending(page)) === '{}')
+  await until(async () => (await kept(page, message)) === null)
   await page.reload()
   await page.waitForTimeout(1000)
   expect(await answers()).toHaveLength(1)
 })
 
-it('drops a kept answer a settled question no longer takes', async () => {
+it('drops a kept answer without a request once its question no longer waits', async () => {
   const { page, card, answers, message } = await openCard()
   await card.getByRole('button', { name: 'Send', exact: true }).click()
   await card.getByRole('button', { name: 'Undo' }).waitFor()
   await keepAnswerThroughUnload(page)
   await until(async () => (await answers()).length > 0)
-  // What a page that died right after its request landed leaves behind: the answer is kept although it arrived. The
-  // next load sends it again and the question's admission refuses it, so it is dropped instead of answered twice.
-  await page.evaluate(
-    ({ key, id }) =>
-      localStorage.setItem(
-        key,
-        JSON.stringify({
-          [id]: { answers: [{ question: 'Which way?', answer: 'this way' }], at: Date.now() },
-        }),
-      ),
-    { key: 'ext.questions.pending-answers', id: String(message) },
-  )
+  await page.evaluate(({ key, answer }) => localStorage.setItem(key, answer), {
+    key: pendingAnswerKey(message),
+    answer: JSON.stringify({
+      answers: [{ question: 'Which way?', answer: 'this way' }],
+      at: Date.now(),
+    }),
+  })
+  // What a page that died right after its request landed leaves behind: the answer is kept although it arrived.
+  let posts = 0
+  await page.route(`**${ANSWER}`, (route) => {
+    posts += 1
+    return route.continue()
+  })
   await page.reload()
-  await until(async () => (await pending(page)) === '{}')
+  await until(async () => (await kept(page, message)) === null)
   await page.waitForTimeout(1000)
+  expect(posts).toBe(0)
   expect(await answers()).toHaveLength(1)
 })

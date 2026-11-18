@@ -64,12 +64,14 @@ message settles (answered, dismissed, or settled for them by @ultimate).
 
 A send during the undo window is a `fetch` with `keepalive`, which Chromium sometimes drops even after the handler ran
 (#21848's probe: about one app-shaped unload in six on a loaded host, one in twenty on a quiet one). So the card also
-writes the committed answer into `localStorage` (`ext.questions.pending-answers`, by message id) the moment the undo
-window starts, and takes it back on Undo or once the send resolves. On the next load `PendingAnswers` (`web.tsx`) sends
-whatever is still pending, so the answer lands whether or not the unload's request survived. Exactly one lands either
-way: a question's admission refuses a second reply, so a resend of an answer that did arrive is refused and dropped,
-not doubled. A pending answer older than ten minutes (`PENDING_ANSWER_EXPIRY_MS`) is dropped rather than answered late.
-Side-chat's pinned question sends through its own action and keeps its own flow.
+writes the committed answer into `localStorage` (`ext.questions.pending-answers.<message id>`, with when its window
+started) the moment the undo window starts, and takes it back on Undo or once the send goes out. On the next load
+`PendingAnswers` (`web.tsx`) sends whatever is still kept, so the answer lands whether or not the unload's request
+survived. Exactly one lands either way: a kept answer whose question no longer waits on the user is dropped without a
+request, and a resend of an answer that did arrive is refused by the same admission, so it is dropped and not doubled.
+A send that fails keeps its answer for the next load. A pending answer older than ten minutes
+(`PENDING_ANSWER_EXPIRY_MS`) is dropped rather than answered late. Side-chat's pinned question sends through its own
+action and keeps its own flow.
 
 ## Where open questions wait
 
