@@ -24,6 +24,7 @@ import {
   useUltimate,
 } from '@/sdk'
 import type { EntryRecord, ToolCallView } from '@/sdk'
+import { overBudgetText } from './checks.ts'
 import { useWorkspaceIndex } from './data.tsx'
 import { LandingCard, Open, Subject } from './landing.tsx'
 import type { LandingTone } from './landing.tsx'
@@ -82,6 +83,11 @@ function OutcomeBody({ outcome }: { outcome: LanderOutcome }) {
       {outcome.flaky?.map((command) => (
         <p className="text-warning" key={command}>
           flaky: {command}
+        </p>
+      ))}
+      {outcome.overBudget?.map((check) => (
+        <p className="text-warning" key={check.command}>
+          over budget: {overBudgetText(check)}
         </p>
       ))}
       {outcome.needsRestart && <p className="text-warning">Needs restart.</p>}
@@ -207,10 +213,10 @@ function StepLine({
         icon={
           row.check.result === 'passed' ? (
             <CheckIcon className="size-3 shrink-0 text-success" />
-          ) : row.check.result === 'flaky' ? (
-            <TriangleAlertIcon className="size-3 shrink-0 text-warning" />
-          ) : (
+          ) : row.check.result === 'failed' ? (
             <XIcon className="size-3 shrink-0 text-error" />
+          ) : (
+            <TriangleAlertIcon className="size-3 shrink-0 text-warning" />
           )
         }
       >

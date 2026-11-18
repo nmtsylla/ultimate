@@ -120,8 +120,8 @@ is no main, so `workspace submit` refuses it. The task is its conversation's for
 tab shows it working while it lands. The sidebar pins every lander
 conversation above the others, never concluded, with "idle · last <sha> <time>" or a pulsing "landing". It logs
 every submission as `ultimate.lander` entries, which carry no model message, so no model run in that conversation
-sees them: `queued`, `started`, each step, each check with `passed`, `failed` or `flaky`, and the outcome (`landed`
-with `sha`, `commits`, `paths`, `flaky`, `pushed`, or `failed` with `reason` and the `output` tail). Each line is
+sees them: `queued`, `started`, each step, each check with `passed`, `failed`, `flaky` or `over budget`, and the outcome (`landed`
+with `sha`, `commits`, `paths`, `flaky`, `overBudget`, `pushed`, or `failed` with `reason` and the `output` tail). Each line is
 committed with the task state change or doc update it describes; a check result is logged right after the check
 runs, so a crash before its memo logs the rerun too. The same commits record each step as `{ step, at, check? }` in
 the queue entry's `steps`; when the submission ends, its steps, outcome, tip and target move into the root document's
@@ -138,7 +138,7 @@ The commit that records a landed outcome (also when only its push failed) emits 
 lander, divergence, the submit-time title, summary and feature, the first ten commits with `commitCount`, the first
 eight paths and `pushed`. A failed outcome emits `workspaces.landing-failed` (`SubmissionFailed`): submission,
 submitter, target and `reason`; it `fails` `workspaces.landed`, so a browser `until` on a landing ends with it. Each check run, a rerun included, emits `workspaces.check`
-(`CheckRan`): submission, command, `passed`, `failed`, `flaky` or `timeout` (a watchdog stopped it) and its `ms`, in the
+(`CheckRan`): submission, command, `passed`, `failed`, `flaky`, `over budget` or `timeout` (a limit stopped that run) and its `ms`, in the
 commit that logs its result. Lineage reacts to it with a landing note in the submitter's tree
 root, exactly once, unless the submitter is that root or has none; the lander itself calls no lineage service. Its
 data includes `divergence` and `at` alongside `from`, `sha`, `target`,
@@ -160,22 +160,26 @@ lander's sidebar row shows the feature it lands or landed last.
    runs once when the checkout is created. With `lander.push`, it fetches the remote branch and merges it when it is ahead.
 2. Merges the submitted tip. A conflict aborts the merge and reports the conflicting paths to the submitter.
 3. Runs `lander.checks` in order. Each check is stopped after 2 minutes without output or 10 minutes total, or at
-   its own `timeout` (seconds, which also caps the no-output limit), killing its whole process group. Watchdog
-   failures name the limit that fired, the failed test lines seen so far (vitest's `FAIL`/`×` lines, kept even when
-   they scrolled out of the tail) and the output tail, and rerun like other check failures.
+   its own `timeout` (seconds, which also caps the no-output limit), killing its whole process group. A check a limit
+   stopped is reported as a kill: the limit that fired and the budget it allows, and the output tail, never the
+   `FAIL`/`×` lines seen so far, which name whichever test the cut-off run was in. It reruns like other check failures,
+   and its `CheckRan` result is `timeout`.
    An entry is a check or an array of checks, a group that runs concurrently; a check is a command string or
    `{ "command": "pnpm test", "timeout": 180 }`.
    A failing check
-   reruns once: passing then is reported as flaky, failing again reports the output tail to the submitter once every
-   command of its group settled. Each command keeps its own memo, steps and flaky note. A passed or flaky check records its last
+   reruns once: passing then is recorded `flaky` when the first run failed for its own reason, and `over budget` when a
+   limit killed it, with that budget and the rerun's duration, which the report and the card say too. Failing again
+   reports the output tail to the submitter once every command of its group settled, naming the budget when the rerun
+   hit one and hinting at the budget or the host's load instead of a test. Each command keeps its own memo, steps and
+   `flaky` or `over budget` note. A passed, `flaky` or `over budget` check records its last
    output line (ANSI stripped, at most 200 characters) as `summary`, shown muted after the command on its step row.
    A failed run's log entry keeps its output tail as `output` (not in `steps`), under a collapsed "Output" in the
-   lander's log, so a check that then passed as flaky can still be diagnosed.
+   lander's log, so a check that then passed as `flaky` or `over budget` can still be diagnosed.
 4. Fast-forwards the target branch in the source checkout (`merge --ff-only` when it is checked out). If the target
    moved meanwhile it starts again, at most three attempts.
 5. With `lander.push`, pushes the target branch (never forced); a rejection integrates again once, then is reported.
 6. Records `landed`, emitting `workspaces.landed` in the same commit, then reports (request id `lander:<submission>`
-   for each write): the landed commit and commits, flaky checks, whether it pushed, "Needs restart." for `server/`,
+   for each write): the landed commit and commits, `flaky` and `over budget` checks, whether it pushed, "Needs restart." for `server/`,
    `shared/`, `patches/` or `pnpm-lock.yaml` changes to the running clone (`needsRestart` in `lib/layers.ts`), and the lander conversation id for the full log.
    - A failure is a waking input to the submitter (a `workspaces.lander-report` entry): it fixes the cause in its
      workspace and submits again.
@@ -184,7 +188,7 @@ lander's sidebar row shows the feature it lands or landed last.
      busy subagent, a reply-enabled message of its own still open, a pending notify or subagent report), through the
      `workspaces.branches` extension point messages provides. Then the conversation that started the branch
      (`starter`, from the same extension point) wakes with the same card, its text cut to one line (branch, sha,
-     pushed, `needs restart`, flaky checks) plus the divergence, saying whether the branch is concluded or
+     pushed, `needs restart`, `flaky` and `over budget` checks) plus the divergence, saying whether the branch is concluded or
      still has work under way (which then reports when it stops, as any branch does). Last, a concluded branch's
      checkout is released. A root or standing agent refuses concluding and stays open. Any later input resumes a
      concluded branch.
@@ -196,7 +200,7 @@ both are optional. Anything that must follow every landing (a deploy, a notifica
 Each attempt starts from a reset checkout, and the integrated commit is memoized after the checks, so a crash resumes
 safely. Failed submissions are dropped from the queue after their report.
 
-The fast-forward records `landed: { sha, base, commits, paths, flaky }` on the queue entry in the same commit as the
+The fast-forward records `landed: { sha, base, commits, paths, flaky, overBudget }` on the queue entry in the same commit as the
 workspace's `landed`. A lander task that ends after that and before its report, for example one faulted because a
 reload of this extension changed the Workspaces document, loses its memos but not that record: whichever task picks
 the entry next skips merging and checks, pushes exactly `landed.sha` when the target still contains it, and reports

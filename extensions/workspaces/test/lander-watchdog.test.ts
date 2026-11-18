@@ -83,7 +83,7 @@ it('stops a printing check at its own timeout, not the default cap', async () =>
   })
 })
 
-it('names the tests that failed before the watchdog fired, even when they left the tail', async () => {
+it('reports a check a limit stopped as a kill, naming the limit and not the tests its cut-off output named', async () => {
   hanging(
     10,
     ' \u001b[31mFAIL\u001b[39m  test/cloud-lease.test.ts > hangs on a lease\n' +
@@ -91,11 +91,10 @@ it('names the tests that failed before the watchdog fired, even when they left t
   )
   const ran = runLanderCheck('.', 'pnpm test', context, { stall: 1, total: 0.05 })
   await vi.advanceTimersByTimeAsync(50)
-  const failure = (await ran).failure!
-  expect(failure).toMatch(
-    /^Timed out after 0.05 s\nFailed tests so far:\nFAIL {2}test\/cloud-lease.test.ts > hangs on a lease\nnoise/,
-  )
-  expect(failure.match(/FAIL/g)).toHaveLength(1)
+  const { failure, killed } = await ran
+  expect(killed).toEqual({ limit: 'total', seconds: 0.05 })
+  expect(failure).toMatch(/^Timed out after 0.05 s\nnoise/)
+  expect(failure).not.toMatch(/Failed tests so far|FAIL|×/)
 })
 
 it('names the failed tests of a check that exits nonzero', async () => {

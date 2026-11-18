@@ -22,6 +22,8 @@ import { runGroup, sweepPidFiles } from '../../lib/process-group.ts'
 import { landingWeight } from '../../lib/token-weight.ts'
 import type { ExtensionHost } from '../../server/extensions.ts'
 import { CheckRan, SubmissionFailed, SubmissionLanded } from './api.ts'
+import type { CheckEvidence, CheckKill, CheckOutcome, CheckRun, OverBudgetCheck } from './checks.ts'
+import { checkOutcome, overBudgetText, seconds } from './checks.ts'
 import { setup } from './setup.ts'
 import { addCheckout, treePath } from './tree.ts'
 import type { Landed, LanderEntry, LanderOutcome, QueueEntry, WorkspaceIndex } from './types.ts'
@@ -108,6 +110,9 @@ const starterLine = (
     ...(outcome.reason ? [outcome.reason] : []),
     ...(outcome.needsRestart ? ['needs restart'] : []),
     ...(outcome.flaky?.length ? [`flaky: ${outcome.flaky.join(', ')}`] : []),
+    ...(outcome.overBudget?.length
+      ? [`over budget: ${outcome.overBudget.map((check) => check.command).join(', ')}`]
+      : []),
   ]
     .join(' · ')
     .replace(/\s*\n\s*/g, ' ')
@@ -131,7 +136,6 @@ export const limitsFor = (check: Check, limits: CheckLimits): CheckLimits =>
     ? limits
     : { stall: Math.min(limits.stall, check.timeout), total: check.timeout }
 const vitestFailureLine = /^\s*(FAIL|×|✗)\s/
-const seconds = (value: number) => (value < 60 ? `${value} s` : `${+(value / 60).toFixed(1)} min`)
 
 export const checkPids = (home: string) => join(home, 'lander-checks')
 export const sweepChecks = async (home: string) => {
@@ -154,31 +158,37 @@ export async function runLanderCheck(
   pids: string,
   temp: string,
   limits: CheckLimits = defaultCheckLimitsSeconds,
-) {
+): Promise<CheckEvidence> {
   const tmp = createTempBeforeWatchdog(temp)
   let output = ''
   let partial = ''
   const failed = new Set<string>()
-  let stopped: string | undefined
+  let stopped: { kill: CheckKill; line: string } | undefined
   const watchdog = new AbortController()
   const signal = AbortSignal.any([
     watchdog.signal,
     ...(context.abortSignal ? [context.abortSignal] : []),
   ])
-  const stop = (reason: string) => {
+  const stop = (kill: CheckKill, line: string) => {
     if (signal.aborted) return
-    stopped = reason
+    stopped = { kill, line }
     watchdog.abort()
   }
-  const stalled = () => stop(`Stalled: no output for ${seconds(limits.stall)}, stopped`)
+  const stalled = () =>
+    stop(
+      { limit: 'stall', seconds: limits.stall },
+      `Stalled: no output for ${seconds(limits.stall)}, stopped`,
+    )
   const stallDeadline = debounce(limits.stall * 1000, stalled)
   stallDeadline()
   const cancelTotal = deadline(limits.total * 1000, () =>
-    stop(`Timed out after ${seconds(limits.total)}`),
+    stop({ limit: 'total', seconds: limits.total }, `Timed out after ${seconds(limits.total)}`),
   )
-  const report = (reason: string, heading: string) => {
-    const tests = [...failed].slice(-20)
-    return [reason, ...(tests.length ? [heading, ...tests] : []), output].join('\n').trim()
+  const report = (reason: string, heading?: string) => {
+    const tests = heading ? [...failed].slice(-20) : []
+    return [reason, ...(heading && tests.length ? [heading, ...tests] : []), output]
+      .join('\n')
+      .trim()
   }
   const onOutput = (text: string) => {
     output = (output + text).slice(-3000)
@@ -206,7 +216,7 @@ export async function runLanderCheck(
       return { failure: `${output}\n${String(error)}`.trim() }
     }
     context.abortSignal?.throwIfAborted()
-    if (stopped) return { failure: report(stopped, 'Failed tests so far:'), timedOut: true }
+    if (stopped) return { failure: report(stopped.line), killed: stopped.kill }
     if (exit.outOfMemory)
       return { failure: report(`Out of memory: exit ${exit.code}`, 'Failed tests so far:') }
     if (exit.code !== 0) return { failure: report(`exit ${exit.code}`, 'Failed tests:') }
@@ -280,6 +290,7 @@ type CheckedIntegration = {
   base: string
   integrated: string
   flaky: string[]
+  overBudget: OverBudgetCheck[]
 }
 const landedOutcome = (landed: Landed): LanderOutcome => ({
   outcome: 'landed',
@@ -288,6 +299,7 @@ const landedOutcome = (landed: Landed): LanderOutcome => ({
   commits: landed.commits,
   paths: landed.paths,
   flaky: landed.flaky,
+  ...(landed.overBudget ? { overBudget: landed.overBudget } : {}),
   ...(landed.weight ? { weight: landed.weight } : {}),
 })
 type CommittedDeliveryDecision = {
@@ -400,7 +412,7 @@ export function createLander(
             runs?: string
             result?: LanderEntry['check']
             output?: string
-            ran?: { ms: number; timedOut?: boolean }
+            ran?: { ms: number; killed?: CheckKill }
           } = {},
         ) =>
           runtime.commit(async (tx) => {
@@ -418,7 +430,7 @@ export function createLander(
               await host.emit(tx, CheckRan, {
                 submission: id,
                 command: result.command,
-                result: ran.timedOut ? 'timeout' : result.result,
+                result: ran.killed ? 'timeout' : result.result,
                 ms: Math.round(ran.ms),
               })
           }, context)
@@ -493,6 +505,7 @@ export function createLander(
               : `had nothing new to land on ${entry.target}.`,
             ...(landed.commits.length ? [`Commits:\n${landed.commits.join('\n')}`] : []),
             ...landed.flaky.map((command) => `Flaky: ${command}`),
+            ...(landed.overBudget ?? []).map((check) => `Over budget: ${overBudgetText(check)}.`),
           ].join('\n')
         const fail = async (reason: string, output?: string, hint?: string) => {
           const landed = await recordedFirstFastForward()
@@ -654,6 +667,7 @@ export function createLander(
             await step('setting up')
             await setup(source, path, await host.projectSettings(), signal)
             const flaky: string[] = []
+            const overBudget: OverBudgetCheck[] = []
             for (const [position, group] of settings.checks.entries()) {
               const members = Array.isArray(group) ? group : [group]
               const commands = members.map((check) => check.command)
@@ -666,80 +680,76 @@ export function createLander(
                   checkTemp(host.home),
                   limitsFor(members[member], limits),
                 )
-              const runCheckWithOneDurableRerun = async (command: string, member: number) => {
-                const attemptMemoKey = `check:${id}:${attempt}:${Array.isArray(group) ? `${position}.${member}` : position}`
-                let memoizedFirstRun = await runtime.memo<'passed' | 'failed'>(
-                  attemptMemoKey,
-                  context,
-                )
-                if (!memoizedFirstRun) {
-                  await step(`checking: ${command}`, { runs: command })
+              const runCheckWithOneDurableRerun = async (
+                command: string,
+                member: number,
+              ): Promise<CheckOutcome> => {
+                const attemptKey = `check-run:${id}:${attempt}:${Array.isArray(group) ? `${position}.${member}` : position}`
+                const measure = async () => {
                   const began = performance.now()
-                  const ran = await run(command, member)
-                  const unmemoizedResult = ran.failure === undefined ? 'passed' : 'failed'
-                  const logAttemptBeforeMemo = step
-                  await logAttemptBeforeMemo(`checked: ${command}`, {
+                  const evidence = await run(command, member)
+                  return { ...evidence, ms: performance.now() - began }
+                }
+                let first = await runtime.memo<CheckRun>(attemptKey, context)
+                if (!first) {
+                  await step(`checking: ${command}`, { runs: command })
+                  const ran = await measure()
+                  await step(`checked: ${command}`, {
                     result: {
                       command,
-                      result: unmemoizedResult,
+                      result: ran.killed ? 'over budget' : ran.failure ? 'failed' : 'passed',
                       ...(ran.summary ? { summary: ran.summary } : {}),
                     },
                     output: ran.failure,
-                    ran: { ms: performance.now() - began, timedOut: ran.timedOut },
+                    ran,
                   })
-                  memoizedFirstRun = await runtime.memo(attemptMemoKey, unmemoizedResult, context)
+                  first = await runtime.memo(attemptKey, ran, context)
                 }
-                if (memoizedFirstRun === 'passed') return {}
-                let rerun = await runtime.memo<{ failure?: string }>(
-                  `${attemptMemoKey}:rerun`,
-                  context,
-                )
+                if (!first.failure) return { verdict: 'passed' }
+                let rerun = await runtime.memo<CheckRun>(`${attemptKey}:rerun`, context)
                 if (!rerun) {
                   await step(`rerunning: ${command}`, { runs: command })
-                  const began = performance.now()
-                  const ran = await run(command, member)
-                  const timing = { ms: performance.now() - began, timedOut: ran.timedOut }
-                  if (ran.failure === undefined)
+                  const ran = await measure()
+                  if (!ran.failure)
                     await step(`checked: ${command}`, {
                       result: {
                         command,
-                        result: 'flaky',
+                        result: first.killed ? 'over budget' : 'flaky',
                         ...(ran.summary ? { summary: ran.summary } : {}),
                       },
-                      ran: timing,
+                      ran,
                     })
                   else
                     await runtime.commit(async (tx) => {
                       await host.emit(tx, CheckRan, {
                         submission: id,
                         command,
-                        result: ran.timedOut ? 'timeout' : 'failed',
-                        ms: Math.round(timing.ms),
+                        result: ran.killed ? 'timeout' : 'failed',
+                        ms: Math.round(ran.ms),
                       })
                     }, context)
-                  rerun = await runtime.memo<{ failure?: string }>(
-                    `${attemptMemoKey}:rerun`,
-                    ran.failure === undefined ? {} : { failure: ran.failure },
-                    context,
-                  )
+                  rerun = await runtime.memo(`${attemptKey}:rerun`, ran, context)
                 }
-                return rerun.failure === undefined ? { flaky: true } : { failure: rerun.failure }
+                return checkOutcome(command, first, rerun)
               }
               const settledCheckGroup = await Promise.allSettled(
                 commands.map(runCheckWithOneDurableRerun),
               )
-              const results = settledCheckGroup.map((outcome) => {
+              const outcomes = settledCheckGroup.map((outcome) => {
                 if (outcome.status === 'rejected') throw outcome.reason
                 return outcome.value
               })
-              const failed = results.findIndex((result) => result.failure !== undefined)
-              if (failed !== -1)
-                return await fail(
-                  `check failed twice: ${commands[failed]}`,
-                  results[failed].failure,
-                  'Fix it at its cause (a flaky test too: fix or delete it), verify and submit again.',
-                )
-              flaky.push(...commands.filter((_command, member) => results[member].flaky))
+              for (const outcome of outcomes)
+                if (outcome.verdict === 'failed')
+                  return await fail(outcome.reason, outcome.output, outcome.hint)
+              flaky.push(
+                ...commands.filter((_command, member) => outcomes[member].verdict === 'flaky'),
+              )
+              overBudget.push(
+                ...outcomes.flatMap((outcome) =>
+                  outcome.verdict === 'over budget' ? [outcome.check] : [],
+                ),
+              )
             }
             const checkedTreeChanged =
               (await git(path, 'rev-parse', 'HEAD')) !== mergedBeforeChecks.sha ||
@@ -752,11 +762,11 @@ export function createLander(
               )
             checkedIntegration = await runtime.memo<CheckedIntegration>(
               `prepared:${id}:${attempt}`,
-              { base, integrated: mergedBeforeChecks.sha, flaky },
+              { base, integrated: mergedBeforeChecks.sha, flaky, overBudget },
               context,
             )
           }
-          const { base, integrated, flaky } = checkedIntegration
+          const { base, integrated, flaky, overBudget } = checkedIntegration
           await step('fast-forwarding')
           let refused: string | undefined
           const moved = await serializeSourceWrites(source, async () => {
@@ -796,6 +806,7 @@ export function createLander(
             commits: lines(await git(source, 'log', '--oneline', `${base}..${integrated}`)),
             paths: lines(await git(source, 'diff', '--name-only', base, integrated)),
             flaky,
+            ...(overBudget?.length ? { overBudget } : {}),
             ...(weight ? { weight } : {}),
           }
           let landed = firstFastForwardCandidate
