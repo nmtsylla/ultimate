@@ -37,7 +37,8 @@ import type { ActionContext } from '../../../server/actions.ts'
 import { Metadata } from '../../../server/metadata.ts'
 import { emit } from '../../../server/events.ts'
 import messagesExtension, { actions } from '../server.ts'
-import { answerRemoteRequest } from '../route.ts'
+import { sendResult } from '../delivery.ts'
+import { Serving } from '../addresses.ts'
 import pauseExtension, { actions as pauseActions } from '../../pause/server.ts'
 import { Messages, MessageSent } from '../api.ts'
 import { send as sendMessage } from '../send.ts'
@@ -47,8 +48,8 @@ import { BranchReceipts, rootOf, startBranch } from '../../lineage/server.ts'
 import type { BranchInput } from '../../lineage/server.ts'
 import { Branch, Roots, Tally } from '../../lineage/api.ts'
 import { Standing, Subagents } from '../../subagents/api.ts'
-import { Workspaces } from '../../workspaces/workspaces.ts'
-import { concludedIn } from '../../conversations/server.ts'
+import { landingPending, pendingLandingCards, Workspaces } from '../../workspaces/workspaces.ts'
+import { actions as conversationActions, concludedIn } from '../../conversations/server.ts'
 import { UiState } from '../../../shared/ui-state.ts'
 
 const homes: string[] = []
@@ -130,8 +131,9 @@ async function fixture(
   })
   let opened: OpenHost
   let service!: MessagesService
-  const hold = gate()
+  let hold = gate()
   let holding = false
+  const events = eventHost(() => opened.harness, 'messages')
   const openers: (() => Promise<void>)[] = []
   const closers: (() => Promise<void>)[] = []
   const provider = ({ name }: { name: string }) =>
@@ -147,7 +149,7 @@ async function fixture(
             },
           }
         : name === 'workspaces'
-          ? { doc: Workspaces, git: async () => '' }
+          ? { doc: Workspaces, landingPending, pendingLandingCards, git: async () => '' }
           : name === 'conversations'
             ? { concludedIn }
             : name === 'lineage'
@@ -160,6 +162,7 @@ async function fixture(
     ...prepared,
     metadata: Metadata,
     emit,
+    react: events.react,
     harness: () => opened.harness,
     // Messages also implements workspaces' branches point; the tests call its own service.
     implement: (api: { name: string }, value: MessagesService) => {
@@ -286,6 +289,11 @@ async function fixture(
     // A branch's reply that keeps @ultimate busy, so another branch's reply steers into the same run.
     if (last.role === 'user' && text.startsWith('Reply from #') && text.includes('STALL'))
       return fauxAssistantMessage([fauxToolCall('hold', {})], { stopReason: 'toolUse' })
+    if (last.role === 'user' && text.startsWith('Automation ') && text.includes('REPLYLOCAL'))
+      return fauxAssistantMessage(
+        [fauxToolCall('message', { to: `#${recipient.id}`, text: 'Approved' })],
+        { stopReason: 'toolUse' },
+      )
     // @ultimate answers a branch's reply with only a message to the user.
     if (
       last.role === 'user' &&
@@ -320,9 +328,11 @@ async function fixture(
       const index = hosts.indexOf(current)
       if (index !== -1) hosts.splice(index, 1)
       for (const cleanup of closers) await cleanup()
+      await events.stop()
       await close()
     }
     hosts.push(opened)
+    await events.start()
     for (const opener of openers) await opener()
     return opened
   }
@@ -361,8 +371,15 @@ async function fixture(
     action,
     service: () => service,
     open,
-    hold,
+    get hold() {
+      return hold
+    },
+    holdAgain: () => {
+      hold = gate()
+      holding = false
+    },
     holding: () => holding,
+    reactorsSettled: events.settled,
     observed,
     transcripts,
   }
@@ -1029,6 +1046,40 @@ it('delivers one answer to several messages once, and closes each', async () => 
   expect(log.filter((m) => m.from === f.recipient.id)).toHaveLength(1)
   expect(await replies(f)).toHaveLength(1)
 })
+it('replies once to two requests from the same local asker delegated in one run', async () => {
+  const f = await fixture()
+  const send = (text: string) =>
+    sendMessage(f.host, f.recipient.id, { to: '#1', text, steer: true }, context)
+  const first = await send('First\nHOLD')
+  await until(f.holding)
+  const firstHold = f.hold
+  const second = await send('Second\nHOLD')
+  await until(
+    async () =>
+      (await f.opened.harness.snapshot(InboxDoc, ROOT_CONVERSATION_ID, context))!.items.length ===
+      1,
+  )
+  f.holdAgain()
+  firstHold.release()
+  await until(f.holding)
+  await f.opened.harness.commit((tx) => f.service().owed(tx, ROOT_CONVERSATION_ID, 'A1'), context)
+  const owners = (await f.opened.harness.snapshot(Serving, ROOT_CONVERSATION_ID, context))!.owners
+  expect(Object.keys(owners).map(Number)).toEqual([first, second])
+  f.hold.release()
+  await until(async () =>
+    (await f.opened.harness.inspect(context)).tasks.every(
+      ({ record }) => !['board.delivery', 'board.route'].includes(record.kind),
+    ),
+  )
+  expect(
+    (await f.log())!.messages.filter((m) => m.id === first || m.id === second).map((m) => m.state),
+  ).toEqual(['answered', 'answered'])
+  const received = (await f.recipient.context(context)).entries.filter(
+    (entry) => entry.kind === 'board.reply',
+  )
+  expect(received).toHaveLength(1)
+})
+
 async function codemodeFixture() {
   const home = await temp('ultimate-messages-actions-')
   homes.push(home)
@@ -1051,10 +1102,10 @@ async function codemodeFixture() {
     `import { ConversationsApi } from ${JSON.stringify(resolve('extensions/conversations/api.ts'))}
 import { SubagentsApi } from ${JSON.stringify(resolve('extensions/subagents/api.ts'))}
 import { WorkspacesApi } from ${JSON.stringify(resolve('extensions/workspaces/api.ts'))}
-import { Workspaces } from ${JSON.stringify(resolve('extensions/workspaces/workspaces.ts'))}
+import { landingPending, pendingLandingCards, Workspaces } from ${JSON.stringify(resolve('extensions/workspaces/workspaces.ts'))}
 export default (host) => {
   host.implement(SubagentsApi, { residents: async () => [] })
-  host.implement(WorkspacesApi, { doc: Workspaces })
+  host.implement(WorkspacesApi, { doc: Workspaces, landingPending, pendingLandingCards })
   host.implement(ConversationsApi, { concludedIn: async () => new Set() })
   return { name: 'core-stand-ins' }
 }
@@ -1383,7 +1434,7 @@ it("forwards tool-result images by id, not an earlier turn's as latest, and chec
   expect(f.observed.join('\n')).toContain(`entry ${elsewhere} is not in this conversation`)
   expect((await f.log())!.messages.filter((m) => m.from === 1)).toHaveLength(1)
 })
-async function branched(f: Awaited<ReturnType<typeof fixture>>, prompt = 'Explore') {
+async function enableBranch(f: Awaited<ReturnType<typeof fixture>>) {
   const tool = (await f.opened.root.agent(context)).deferred.find(
     (candidate) => candidate.name === 'branch',
   )
@@ -1391,6 +1442,9 @@ async function branched(f: Awaited<ReturnType<typeof fixture>>, prompt = 'Explor
     ;(await tx.doc(Roots, ROOT_CONVERSATION_ID)).roots = [1 as ConversationId]
     if (tool) await configure(tx, f.opened.root.id, { modelTools: { add: [tool] } })
   }, context)
+}
+async function branched(f: Awaited<ReturnType<typeof fixture>>, prompt = 'Explore') {
+  await enableBranch(f)
   await f.opened.root.submit(
     { type: 'input', content: 'BRANCH ' + JSON.stringify({ prompt, isolated: false }) },
     context,
@@ -1694,9 +1748,10 @@ it("sends @ultimate's answer to a branch it concluded to the agent whose request
   expect(reply.model![0].content).toContain(
     `#${id} works on #${f.recipient.id}'s message ${asked.id}.`,
   )
-  await f.opened.harness.commit(async (tx) => {
-    ;(await tx.doc(UiState, ROOT_CONVERSATION_ID))['ext.conversations.concluded'] = [id]
-  }, context)
+  await conversationActions.conclude(
+    { ids: [id] },
+    { ...f.action(), conversationId: ROOT_CONVERSATION_ID },
+  )
   f.hold.release()
   await until(async () =>
     (await f.log())!.messages.some((m) => m.from === 1 && m.to === f.recipient.id && m.routed),
@@ -1713,9 +1768,12 @@ it("sends @ultimate's answer to a run its automation woke to the agent whose req
   // ultimate-eval #53: @ultimate answered "I've started the A/B" to another Ultimate's request and made automation A8;
   // the result, written in the run A8's fire woke (#53/5281), reached no one.
   const f = await fixture()
-  await f.send('@scout', 'SEND ' + JSON.stringify({ to: '#1', text: 'Run the A/B' }), {
+  await f.send('@scout', 'SEND ' + JSON.stringify({ to: '#1', text: 'Run the A/B\nHOLD' }), {
     reply: false,
   })
+  await until(f.holding)
+  await f.opened.harness.commit((tx) => f.service().owed(tx, ROOT_CONVERSATION_ID, 'A8'), context)
+  f.hold.release()
   const request = async () =>
     (await f.log())!.messages.find((m) => m.from === f.recipient.id && m.to === 1)
   // @ultimate's early answer ("started") settles the request.
@@ -1724,31 +1782,28 @@ it("sends @ultimate's answer to a run its automation woke to the agent whose req
     return id !== undefined && (await f.log())!.messages.some((m) => m.re === id)
   })
   const asked = (await request())!
-  const fired = (serves?: { message: number; from: number }) =>
+  const fired = (tellUser = false) =>
     f.opened.root.submit(
       {
         type: 'input',
         // It tells the user first: that message must not end the run before its answer to the asker.
-        content: `Automation A8 "ab done" fired: AB-DONE${serves ? ' TELLUSER' : ''}`,
+        content: `Automation A8 "ab done" fired: AB-DONE${tellUser ? ' TELLUSER' : ''}`,
         entry: {
           kind: 'automations.fired',
           data: {
             id: 'A8',
             name: 'ab done',
             text: 'AB-DONE',
-            // @ultimate's message to #scout before the fire is no answer of this run.
-            ...(serves ? { serves, at: Date.now() } : {}),
           },
         },
       },
       context,
     )
-  await (await fired({ message: asked.id, from: f.recipient.id })).wait(context)
-  // A later fire carries no request: its answer stays here.
-  await (await fired()).wait(context)
+  await (await fired(true)).wait(context)
   await until(async () =>
     (await f.log())!.messages.some((m) => m.from === 1 && m.to === f.recipient.id && m.routed),
   )
+  await (await fired()).wait(context)
   await f.opened.root.waitForIdle(context)
   expect((await f.log())!.messages.filter((m) => m.from === 1 && m.routed)).toEqual([
     expect.objectContaining({
@@ -1786,7 +1841,7 @@ it("routes the answer of a run an automation woke to the branches whose report t
               id: 'A3',
               name: 'check-back',
               text: 'AB-DONE',
-              ...(branches ? { branches, at: Date.now() } : {}),
+              ...(branches ? { branches } : {}),
             },
           },
         },
@@ -2308,6 +2363,330 @@ it('names the project when another Ultimate cannot be reached, and marks the mes
     stopped.service().tell(ROOT_CONVERSATION_ID, { project: 'poe2-rust', text: 'Hi' }, context),
   ).rejects.toThrow('poe2-rust is not running on this machine')
 })
+it('hands a concluded branch’s remote request to the automation created while reading its reply', async () => {
+  const other = await otherUltimate(() => [200, { result: 1 }])
+  const f = await remoteFixture(other.url)
+  await enableBranch(f)
+  const key = 'branch-check-back'
+  const request = await actions.remote(
+    {
+      key,
+      text: 'BRANCH ' + JSON.stringify({ prompt: 'Inspect STALL', isolated: false }),
+      reply: true,
+      from,
+    },
+    f.action(),
+  )
+  await until(f.holding)
+  await until(() => other.posted.length === 1)
+  expect(other.posted[0].body).toMatchObject({ key, interim: expect.any(Number) })
+  const id = (await f.log())!.messages.find((m) => m.from === 1 && m.text === 'Inspect STALL')!.to
+  await f.opened.harness.commit((tx) => f.service().owed(tx, ROOT_CONVERSATION_ID, 'A2'), context)
+  await conversationActions.conclude(
+    { ids: [id] },
+    { ...f.action(), conversationId: ROOT_CONVERSATION_ID },
+  )
+  f.hold.release()
+  await until(() => other.posted.length === 2)
+  expect(other.posted[1].body).toMatchObject({ key, interim: expect.any(Number) })
+  await fireAutomation(f, 'A2', 'matrix complete')
+  await until(() => other.posted.length === 3)
+  expect(other.posted[2].body).toMatchObject({
+    key,
+    failed: false,
+    text: expect.stringContaining(`worked on your message ${request}`),
+  })
+  expect(other.posted[2].body).not.toHaveProperty('interim')
+})
+
+async function fireAutomation(
+  f: Awaited<ReturnType<typeof remoteFixture>>,
+  id: string,
+  text: string,
+  whenBusy: 'steer' | 'followUp' = 'followUp',
+) {
+  const submission = await f.opened.harness.commit(
+    (tx) =>
+      f.service().submitFire(
+        tx,
+        f.opened.root,
+        {
+          type: 'input',
+          whenBusy,
+          content: `Automation ${id} "matrix" fired: ${text}`,
+          entry: { kind: 'automations.fired', data: { id, name: 'matrix', text } },
+        },
+        { id, name: 'matrix' },
+      ),
+    context,
+  )
+  return (await f.opened.harness.submission(submission, context))!
+}
+
+it('sends only the final result when a tell replies in the original request’s run', async () => {
+  const asker = await otherUltimate(() => [200, { result: 1 }])
+  const target = await otherUltimate(() => [200, { result: 1 }])
+  const f = await remoteFixture(target.url)
+  const projects = f.host.projects.bind(f.host)
+  Object.assign(f.host, {
+    projects: async () => [
+      ...(await projects()),
+      { name: 'asker', current: false, running: { url: asker.url } },
+    ],
+  })
+  const key = 'original-request'
+  await actions.remote(
+    { key, text: 'Relay this\nHOLD', reply: true, from: { ...from, project: 'asker' } },
+    f.action(),
+  )
+  await until(f.holding)
+  await f.service().tell(ROOT_CONVERSATION_ID, { project: from.project, text: 'Check it' }, context)
+  const tellKey = (target.posted[0].body as { key: string }).key
+  await actions.remoteReply({ key: tellKey, text: 'Fast result', failed: false }, f.action())
+  await until(async () =>
+    (await f.log())!.messages.some(
+      (m) => m.from === 'remote' && m.text === 'Fast result' && m.state === 'delivered',
+    ),
+  )
+  f.hold.release()
+  await until(async () =>
+    (await f.opened.harness.inspect(context)).tasks.every(
+      ({ record }) => !['board.route', 'board.delivery', 'board.settle'].includes(record.kind),
+    ),
+  )
+  expect(asker.posted.map(({ body }) => body)).toEqual([
+    expect.objectContaining({
+      key,
+      failed: false,
+      text: expect.stringMatching(/Result of tell[\s\S]*Fast result/),
+    }),
+  ])
+  expect(asker.posted[0].body).not.toHaveProperty('interim')
+})
+
+it('a cancelled queued fire does not fail the request while the first fire can answer', async () => {
+  const other = await otherUltimate(() => [200, { result: 1 }])
+  const f = await remoteFixture(other.url)
+  const key = 'cancelled-second-fire'
+  const request = await actions.remote(
+    { key, text: 'Do work\nHOLD', reply: true, from },
+    f.action(),
+  )
+  await until(f.holding)
+  await f.opened.harness.commit((tx) => f.service().owed(tx, ROOT_CONVERSATION_ID, 'A1'), context)
+  f.hold.release()
+  await until(() => other.posted.length === 1)
+  f.holdAgain()
+  const first = await fireAutomation(f, 'A1', 'First result\nHOLD')
+  await until(f.holding)
+  const second = await fireAutomation(f, 'A1', 'Never read')
+  expect((await second.status(context)).status).toBe('queued')
+  expect(await second.abort(context)).toBe('aborted')
+  await until(async () => {
+    const owner = (await f.opened.harness.snapshot(Serving, ROOT_CONVERSATION_ID, context))?.owners[
+      request
+    ]
+    return owner?.pending.length === 1 && owner.pending[0] === first.id
+  })
+  expect(other.posted).toHaveLength(1)
+  f.hold.release()
+  await until(() => other.posted.length === 2)
+  expect(other.posted[1].body).toMatchObject({
+    key,
+    failed: false,
+    text: expect.stringContaining('Result of automation A1'),
+  })
+  expect(other.posted[1].body).not.toHaveProperty('interim')
+  expect(
+    (await f.log())!.messages.filter((m) => m.remote?.key === key && m.state === 'failed'),
+  ).toEqual([])
+})
+
+it('fails an owned request once when a message tool terminates the run that read the fire', async () => {
+  const other = await otherUltimate(() => [200, { result: 1 }])
+  const f = await remoteFixture(other.url)
+  const key = 'tool-terminated'
+  await actions.remote({ key, text: 'Job\nHOLD', reply: true, from }, f.action())
+  await until(f.holding)
+  await f.opened.harness.commit((tx) => f.service().owed(tx, ROOT_CONVERSATION_ID, 'A1'), context)
+  f.hold.release()
+  await until(() => other.posted.length === 1)
+  f.holdAgain()
+  const local = await sendMessage(
+    f.host,
+    f.recipient.id,
+    { to: '#1', text: 'Approve this?\nHOLD' },
+    context,
+  )
+  await until(f.holding)
+  const fire = await fireAutomation(f, 'A1', 'REPLYLOCAL', 'steer')
+  f.hold.release()
+  expect(await fire.wait(context)).toMatchObject({ status: 'done' })
+  await until(() => other.posted.length === 2)
+  expect((await f.log())!.messages).toContainEqual(
+    expect.objectContaining({ re: local, text: 'Approved' }),
+  )
+  expect(other.posted[1].body).toMatchObject({
+    key,
+    failed: true,
+    text: expect.stringContaining('ended without an answer'),
+  })
+  expect(
+    (await f.log())!.messages.filter((m) => m.remote?.key === key && m.state === 'failed'),
+  ).toHaveLength(1)
+})
+
+it('lets a pending branch report settle a concluded branch without failing on earlier progress', async () => {
+  const other = await otherUltimate(() => [200, { result: 1 }])
+  const f = await remoteFixture(other.url)
+  await enableBranch(f)
+  const key = 'report-pending'
+  const request = await actions.remote(
+    {
+      key,
+      text: 'BRANCH ' + JSON.stringify({ prompt: 'Progress STALL', isolated: false }),
+      reply: true,
+      from,
+    },
+    f.action(),
+  )
+  await until(f.holding)
+  await until(() => other.posted.length === 1)
+  const branch = (await f.log())!.messages.find((m) => m.from === 1 && m.text === 'Progress STALL')!
+    .to as ConversationId
+  f.hold.release()
+  await until(async () => {
+    const owner = (await f.opened.harness.snapshot(Serving, ROOT_CONVERSATION_ID, context))?.owners[
+      request
+    ]
+    return owner?.owner.kind === 'branch' && owner.owner.id === branch && !owner.pending.length
+  })
+  expect(other.posted).toHaveLength(1)
+  f.holdAgain()
+  await sendMessage(
+    f.host,
+    branch,
+    { to: '#1', text: 'Finished WEIGH\nHOLD', reply: false },
+    context,
+    { report: true, note: false },
+  )
+  await until(f.holding)
+  await conversationActions.conclude({ ids: [branch] }, f.action())
+  await until(f.reactorsSettled)
+  expect(other.posted).toHaveLength(1)
+  f.hold.release()
+  await until(() => other.posted.length === 2)
+  expect(other.posted[1].body).toMatchObject({
+    key,
+    failed: false,
+    text: expect.stringContaining(`Result of #${branch}`),
+  })
+  expect(other.posted[1].body).not.toHaveProperty('interim')
+})
+
+it('a one-way update from the remote asker gives its request to the replacement automation', async () => {
+  const other = await otherUltimate(() => [200, { result: 1 }])
+  const f = await remoteFixture(other.url)
+  const key = 'replace-matrix'
+  await actions.remote({ key, text: 'Run the matrix\nHOLD', reply: true, from }, f.action())
+  await until(f.holding)
+  const create = (id: string) =>
+    f.opened.harness.commit((tx) => f.service().owed(tx, ROOT_CONVERSATION_ID, id), context)
+  await create('A1')
+  f.hold.release()
+  await until(() => other.posted.length === 1)
+  f.holdAgain()
+  await actions.remote(
+    {
+      key: 'change-plan',
+      text: 'Stop the old matrix and start the new one\nHOLD',
+      reply: false,
+      from,
+    },
+    f.action(),
+  )
+  await until(f.holding)
+  await create('A2')
+  f.hold.release()
+  await until(() => other.posted.length === 2)
+  await (await fireAutomation(f, 'A1', 'old matrix stopped')).wait(context)
+  await until(async () =>
+    (await f.opened.harness.inspect(context)).tasks.every(
+      (t) => !['board.route', 'board.delivery'].includes(t.record.kind),
+    ),
+  )
+  expect(other.posted.map((p) => p.body)).toEqual(
+    Array(2).fill(expect.objectContaining({ key, interim: expect.any(Number) })),
+  )
+  await fireAutomation(f, 'A2', 'new matrix complete')
+  await until(() => other.posted.length === 3)
+  expect(other.posted[2].body).toMatchObject({
+    key,
+    failed: false,
+    text: expect.stringContaining('new matrix complete'),
+  })
+  expect(other.posted[2].body).not.toHaveProperty('interim')
+})
+
+async function startRelay() {
+  const other = await otherUltimate(() => [200, { result: 1 }])
+  const f = await remoteFixture(other.url)
+  const b = await branched(f)
+  const ask = await b.branch.submit(
+    {
+      type: 'input',
+      content:
+        'SEND ' + JSON.stringify({ to: '#1', text: 'Relay to the evaluation project\nHOLD' }),
+    },
+    context,
+  )
+  await until(f.holding)
+  const request = (await f.log())!.messages.findLast((m) => m.from === b.id && m.reply)!
+  await f
+    .service()
+    .tell(ROOT_CONVERSATION_ID, { project: from.project, text: 'Run evaluation' }, context)
+  const key = (other.posted[0].body as { key: string }).key
+  f.hold.release()
+  await ask.wait(context)
+  await b.settled()
+  expect((await f.log())!.messages.find((m) => m.re === request.id)).toMatchObject({ to: b.id })
+  return { f, b, key, request }
+}
+
+it('relays a tell’s final result to the branch through its reply-expected request', async () => {
+  const { f, b, key, request } = await startRelay()
+  const text = 'Evaluation passed'
+  await actions.remoteReply({ key, text, failed: false }, f.action())
+  await until(() => f.observed.some((s) => s.includes(text)))
+  await b.settled()
+  expect((await f.log())!.messages.filter((m) => m.routed && m.to === b.id)).toContainEqual(
+    expect.objectContaining({
+      reply: false,
+      text: expect.stringMatching(
+        `Result of .+, which worked on your message ${request.id}:[\\s\\S]+${text}`,
+      ),
+    }),
+  )
+})
+
+it('fails a tell-owned branch request once, even when the remote failure is replayed', async () => {
+  const { f, b, key, request } = await startRelay()
+  const text = 'Evaluation aborted'
+  await actions.remoteReply({ key, text, failed: true }, f.action())
+  await actions.remoteReply({ key, text, failed: true }, f.action())
+  await until(() => f.observed.some((s) => s.includes(text)))
+  await b.settled()
+  expect(
+    (await f.log())!.messages.filter((m) => m.state === 'failed' && m.re === request.id),
+  ).toEqual([
+    expect.objectContaining({
+      to: b.id,
+      reply: false,
+      text: expect.stringContaining('no result will come from it'),
+    }),
+  ])
+})
+
 it("keeps another Ultimate's request open through interim answers and closes it with the served result", async () => {
   // ultimate-eval #53: "I've started the A/B" used up the reply, and the result 14 min later reached no one.
   const other = await otherUltimate(() => [200, { result: 1 }])
@@ -2317,10 +2696,9 @@ it("keeps another Ultimate's request open through interim answers and closes it 
     f.action(),
   )
   await until(f.holding)
-  const handOn = () =>
-    f.opened.harness.commit((tx) => f.service().owed(tx, ROOT_CONVERSATION_ID), context)
-  const serves = (await handOn()).serves!
-  expect(serves).toMatchObject({ message: request, from: 'remote', remote: { key: 'ab' } })
+  const handOn = (id: string) =>
+    f.opened.harness.commit((tx) => f.service().owed(tx, ROOT_CONVERSATION_ID, id), context)
+  await handOn('A8')
   f.hold.release()
   const posted = (n: number) => until(() => other.posted.length === n)
   await posted(1)
@@ -2329,14 +2707,14 @@ it("keeps another Ultimate's request open through interim answers and closes it 
     failed: false,
     interim: expect.any(Number),
   })
-  const fire = async (text: string) => {
+  const fire = async (id: string, text: string) => {
     const fired = await f.opened.root.submit(
       {
         type: 'input',
-        content: `Automation A8 "ab" fired: ${text}`,
+        content: `Automation ${id} "ab" fired: ${text}`,
         entry: {
           kind: 'automations.fired',
-          data: { id: 'A8', name: 'ab', text, serves, at: Date.now() },
+          data: { id, name: 'ab', text },
         },
       },
       context,
@@ -2344,18 +2722,19 @@ it("keeps another Ultimate's request open through interim answers and closes it 
     return fired
   }
   // A fire that finds the job still running hands the request on to a new check-back: still interim.
-  await fire('still running\nHOLD')
-  await until(() => f.holding())
-  await until(async () => (await handOn()).serves !== undefined)
+  f.holdAgain()
+  await fire('A8', 'still running\nHOLD')
+  await until(f.holding)
+  await handOn('A9')
   f.hold.release()
   await posted(2)
   expect(other.posted[1].body).toMatchObject({ key: 'ab', interim: expect.any(Number) })
-  await fire('done')
+  await fire('A9', 'done')
   await posted(3)
   expect(other.posted[2].body).toMatchObject({ key: 'ab', failed: false })
   expect(other.posted[2].body).not.toHaveProperty('interim')
   expect((other.posted[2].body as { text: string }).text).toContain(
-    `Result of automation A8 "ab", which worked on your message ${request}`,
+    `Result of automation A9 "ab", which worked on your message ${request}`,
   )
   await f.opened.root.waitForIdle(context)
   expect(other.posted).toHaveLength(3)
@@ -2402,11 +2781,17 @@ it("keeps the answering run's early answer interim when the served result goes o
   // Review of 70a00e62: the result cleared the served mark, so a later "started" answer went out as the final reply.
   const other = await otherUltimate(() => [200, { result: 1 }])
   const f = await remoteFixture(other.url)
-  await actions.remote({ key: 'race', text: 'Job\nHOLD', reply: true, from }, f.action())
+  const request = await actions.remote(
+    { key: 'race', text: 'Job\nHOLD', reply: true, from },
+    f.action(),
+  )
   await until(f.holding)
   await f.opened.harness.commit(async (tx) => {
-    const { serves } = await f.service().owed(tx, ROOT_CONVERSATION_ID)
-    await answerRemoteRequest(f.host, tx, ROOT_CONVERSATION_ID, serves!, 'Result', undefined, 1)
+    await f.service().owed(tx, ROOT_CONVERSATION_ID, 'A8')
+    const { owners } = await tx.doc(Serving, ROOT_CONVERSATION_ID)
+    const { request: served } = owners[request]
+    delete owners[request]
+    await sendResult(f.host, tx, ROOT_CONVERSATION_ID, served, 'Result', {})
   }, context)
   await until(() => other.posted.length === 1)
   expect(other.posted[0].body).not.toHaveProperty('interim')
@@ -2420,64 +2805,89 @@ it('serves nothing for work that never answers back, and fails a served request 
   await actions.remote({ key: 'job', text: 'Job\nHOLD', reply: true, from }, f.action())
   await until(f.holding)
   // A prompt-only automation runs elsewhere and never wakes @ultimate: the request is not served.
-  const promptOnly = await f.opened.harness.commit(
-    (tx) => f.service().owed(tx, ROOT_CONVERSATION_ID, false),
-    context,
-  )
-  expect(promptOnly.serves).toBeUndefined()
-  const { serves } = await f.opened.harness.commit(
-    (tx) => f.service().owed(tx, ROOT_CONVERSATION_ID),
-    context,
-  )
+  await f.opened.harness.commit(async (tx) => {
+    await f.service().owed(tx, ROOT_CONVERSATION_ID)
+    expect((await tx.doc(Serving, ROOT_CONVERSATION_ID)).owners).toEqual({})
+    await f.service().owed(tx, ROOT_CONVERSATION_ID, 'A8')
+  }, context)
   f.hold.release()
   await until(() => other.posted.length === 1)
   expect(other.posted[0].body).toMatchObject({ interim: expect.any(Number) })
   // The run its fire woke was stopped: the asker gets a failed final at once, and only one.
   for (const _ of [1, 2])
     await f.opened.harness.commit(
-      (tx) => f.service().dropped(tx, ROOT_CONVERSATION_ID, serves!, 'Run stopped', 99),
+      (tx) => f.service().dropped(tx, 'A8', 'Automation A8,', 'was deleted'),
       context,
     )
   await until(() => other.posted.length === 2)
   await f.opened.root.waitForIdle(context)
   expect(other.posted).toHaveLength(2)
-  expect(other.posted[1].body).toMatchObject({ key: 'job', failed: true, text: 'Run stopped' })
+  expect(other.posted[1].body).toMatchObject({
+    key: 'job',
+    failed: true,
+    text: expect.stringContaining('was deleted'),
+  })
 })
+it('does not give a failed request another owner in its answering run', async () => {
+  const other = await otherUltimate(() => [200, { result: 1 }])
+  const f = await remoteFixture(other.url)
+  const key = 'deleted-before-answer'
+  await actions.remote({ key, text: 'Job\nHOLD', reply: true, from }, f.action())
+  await until(f.holding)
+  await f.opened.harness.commit((tx) => f.service().owed(tx, ROOT_CONVERSATION_ID, 'A1'), context)
+  await f.opened.harness.commit(
+    (tx) => f.service().dropped(tx, 'A1', 'Automation A1,', 'was deleted'),
+    context,
+  )
+  await f.opened.harness.commit((tx) => f.service().owed(tx, ROOT_CONVERSATION_ID, 'A2'), context)
+  f.hold.release()
+  await until(() => other.posted.length === 2)
+  await (await fireAutomation(f, 'A2', 'done')).wait(context)
+  await until(async () =>
+    (await f.opened.harness.inspect(context)).tasks.every(
+      (t) => !['board.route', 'board.delivery'].includes(t.record.kind),
+    ),
+  )
+  expect(other.posted.map(({ body }) => body)).toEqual([
+    expect.objectContaining({ key, failed: true }),
+    expect.objectContaining({ key, failed: false, interim: expect.any(Number) }),
+  ])
+})
+
 it('keeps a request open when a late failure report names a fire whose run handed it on', async () => {
   // Re-review of c0f0b4a5: A handed on to B, B to C; a late failure report for A's run failed the request C served.
   const other = await otherUltimate(() => [200, { result: 1 }])
   const f = await remoteFixture(other.url)
   await actions.remote({ key: 'chain', text: 'Job\nHOLD', reply: true, from }, f.action())
   await until(f.holding)
-  const serves = (
-    await f.opened.harness.commit((tx) => f.service().owed(tx, ROOT_CONVERSATION_ID), context)
-  ).serves!
+  const handOn = (id: string) =>
+    f.opened.harness.commit((tx) => f.service().owed(tx, ROOT_CONVERSATION_ID, id), context)
+  await handOn('A8')
   f.hold.release()
   await until(() => other.posted.length === 1)
-  const fireThatHandsOn = async () => {
+  const fireThatHandsOn = async (id: string, next: string) => {
+    f.holdAgain()
     const fired = await f.opened.root.submit(
       {
         type: 'input',
-        content: 'Automation A8 "job" fired: still running\nHOLD',
+        content: `Automation ${id} "job" fired: still running\nHOLD`,
         entry: {
           kind: 'automations.fired',
-          data: { id: 'A8', name: 'job', text: 'running', serves, at: Date.now() },
+          data: { id, name: 'job', text: 'running' },
         },
       },
       context,
     )
     await until(f.holding)
-    await f.opened.harness.commit((tx) => f.service().owed(tx, ROOT_CONVERSATION_ID), context)
-    const entry = (await fired.status(context)).entry!
+    await handOn(next)
     f.hold.release()
-    await f.opened.root.waitForIdle(context)
-    return entry
+    await fired.wait(context)
   }
-  const a = await fireThatHandsOn()
-  await fireThatHandsOn()
+  await fireThatHandsOn('A8', 'A9')
+  await fireThatHandsOn('A9', 'A10')
   await until(() => other.posted.length === 3)
   await f.opened.harness.commit(
-    (tx) => f.service().dropped(tx, ROOT_CONVERSATION_ID, serves, 'A stopped', a),
+    (tx) => f.service().dropped(tx, 'A8', 'The run Automation A8 woke', 'was stopped'),
     context,
   )
   // The request is still served, and no failed reply is queued for it.

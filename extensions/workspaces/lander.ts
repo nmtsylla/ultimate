@@ -191,9 +191,9 @@ export async function runLanderCheck(
     stallDeadline()
   }
   try {
-    let exitCode: number
+    let exit: Awaited<ReturnType<typeof runGroup>>
     try {
-      exitCode = await runGroup('/bin/bash', ['-c', command], {
+      exit = await runGroup('/bin/bash', ['-c', command], {
         cwd: path,
         env: { ...process.env, TMPDIR: tmp },
         pidFile: join(pids, `${process.pid}-${randomUUID()}.pid`),
@@ -207,7 +207,9 @@ export async function runLanderCheck(
     }
     context.abortSignal?.throwIfAborted()
     if (stopped) return { failure: report(stopped, 'Failed tests so far:'), timedOut: true }
-    if (exitCode !== 0) return { failure: report(`exit ${exitCode}`, 'Failed tests:') }
+    if (exit.outOfMemory)
+      return { failure: report(`Out of memory: exit ${exit.code}`, 'Failed tests so far:') }
+    if (exit.code !== 0) return { failure: report(`exit ${exit.code}`, 'Failed tests:') }
     const last = lines(stripVTControlCharacters(output)).findLast((line) => line.trim())
     return { summary: last?.trim().slice(0, 200) }
   } finally {
@@ -314,7 +316,29 @@ type State =
   | { phase: 'land'; id: string; attempt: number; pushRetried?: boolean }
   | UnderwayReportPhase
   | CommittedDeliveryDecision
+  | { phase: 'card-failed'; error: string }
   | ConcludedBranchRelease
+
+export async function hasPendingLanderReport(tx: Tx, index: WorkspaceIndex, id: ConversationId) {
+  for (const taskId of Object.values(index.landers)) {
+    const state = (await tx.task(taskId))?.state
+    if (!state || state.status === 'terminal') continue
+    const checkpoint = state.checkpoint as State | undefined
+    if (checkpoint?.phase === 'report' && checkpoint.conversationId === id) return true
+  }
+  return false
+}
+
+export async function activeLandingCards(tx: Tx, index: WorkspaceIndex) {
+  const results: string[] = []
+  for (const taskId of Object.values(index.landers)) {
+    const task = await tx.task(taskId)
+    const checkpoint = task?.state.checkpoint as State | undefined
+    if (checkpoint?.phase === 'deliver' && checkpoint.concluded && checkpoint.starter !== undefined)
+      results.push(checkpoint.id)
+  }
+  return results
+}
 
 export function createLander(
   host: Host,
@@ -324,6 +348,9 @@ export function createLander(
     starter: (id: ConversationId, context: Context) => Promise<ConversationId | undefined>
     working: (tx: Tx, id: ConversationId) => Promise<boolean>
     conclude: (tx: Tx, id: ConversationId) => Promise<void>
+    reserveLanding: import('./api.ts').BranchesService['reserveLanding']
+    retireLanding: import('./api.ts').BranchesService['retireLanding']
+    submitLanding: import('./api.ts').BranchesService['submitLanding']
     release: (id: ConversationId, context: Context) => Promise<unknown>
   },
   limits: CheckLimits = defaultCheckLimitsSeconds,
@@ -826,6 +853,8 @@ export function createLander(
             } catch (error) {
               host.notice(`Not concluding #${branch} after landing: ${String(error)}`)
             }
+          if (concludedInThisCommit && starter !== undefined && starter !== branch)
+            await after.reserveLanding(tx, branch, id)
           return {
             status: 'running',
             checkpoint: {
@@ -851,31 +880,48 @@ export function createLander(
         } = task.state.checkpoint
         const entry = { kind: LanderReportEntry.kind, data: { id, outcome } }
         const content = `${headline}\nDiverged: ${outcome.divergence}\n${conclusionCommitted ? `#${conversationId} is concluded.` : `#${conversationId} still has work under way; it reports when it stops.`}`
-        if (starter !== undefined)
-          await (
-            await host.harness().conversation(starter, context)
-          )?.submit(
-            conclusionCommitted
-              ? { type: 'input', content, entry, whenBusy: 'followUp', requestId: `lander:${id}` }
-              : {
-                  type: 'write',
-                  requestId: `lander:${id}`,
-                  entry: {
-                    ...entry,
-                    model: [{ role: 'user', content, timestamp: Date.now() }],
-                  },
-                },
-            context,
-          )
-        await runtime.commit(
-          () => ({
-            status: 'running',
-            checkpoint: conclusionCommitted
-              ? { phase: 'release', conversationId }
-              : { phase: 'next' },
-          }),
-          context,
-        )
+        try {
+          const to =
+            starter === undefined ? undefined : await runtime.conversation(starter, context)
+          await runtime.commit(async (tx) => {
+            if (to && conclusionCommitted)
+              await after.submitLanding(
+                tx,
+                to,
+                { type: 'input', content, entry, whenBusy: 'followUp', requestId: `lander:${id}` },
+                conversationId,
+                id,
+              )
+            else if (to)
+              await to.submit(tx, {
+                type: 'write',
+                requestId: `lander:${id}`,
+                entry: { ...entry, model: [{ role: 'user', content, timestamp: Date.now() }] },
+              })
+            else if (conclusionCommitted && starter !== undefined) await after.retireLanding(tx, id)
+            return {
+              status: 'running',
+              checkpoint: conclusionCommitted
+                ? { phase: 'release', conversationId }
+                : { phase: 'next' },
+            }
+          }, context)
+        } catch (error) {
+          if (runtime.signal.aborted || !conclusionCommitted || starter === undefined) throw error
+          await runtime.commit(async (tx) => {
+            await after.retireLanding(tx, id)
+            return {
+              status: 'running',
+              checkpoint: {
+                phase: 'card-failed',
+                error: error instanceof Error ? error.message : String(error),
+              },
+            }
+          }, context)
+        }
+      },
+      'card-failed': (task) => {
+        throw new Error(task.state.checkpoint.error)
       },
       release: async (task, runtime, context) => {
         await after
@@ -898,6 +944,13 @@ export function createLander(
             item.state = 'queued'
             delete item.step
           }
+        const checkpoint = task.state.checkpoint
+        if (
+          checkpoint.phase === 'deliver' &&
+          checkpoint.concluded &&
+          checkpoint.starter !== undefined
+        )
+          await after.retireLanding(tx, checkpoint.id)
         return { status: 'terminal', outcome: { status: 'aborted' } }
       }, context),
   })

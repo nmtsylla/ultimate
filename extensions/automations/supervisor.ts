@@ -1,4 +1,10 @@
-import type { ConversationId, Agent, Cursor, Submission, Tx } from '@earendil-works/pi-durable'
+import type {
+  ConversationId,
+  Agent,
+  Cursor,
+  InputSubmissionDraft,
+  Tx,
+} from '@earendil-works/pi-durable'
 import { constants } from 'node:fs'
 import type { Dirent } from 'node:fs'
 import { access, appendFile, mkdir, readFile, readdir, writeFile } from 'node:fs/promises'
@@ -249,6 +255,7 @@ export function supervisor(
         if (!gone(sub)) continue
         const publishedSinceScan = trust && (await exists(join(projectDir(sub.id), MANIFEST)))
         if (publishedSinceScan) continue
+        await drop(tx, sub, 'was deleted')
         delete state.automations[sub.id]
         stops.push({
           id: sub.id,
@@ -350,7 +357,6 @@ export function supervisor(
               `automations:${sub.id}:${event}:ultimate`,
               ctx,
             )
-        let servingRun: Submission | undefined
         for (const target of targets) {
           const id =
             typeof target === 'string'
@@ -367,53 +373,28 @@ export function supervisor(
           const requestId = `automations:${sub.id}:${event}:${target}`
           const conversation = await runtime.conversation(id, ctx)
           if (!conversation) throw new Error(`Automation ${sub.id}: conversation #${id} is missing`)
-          const submitted = await conversation.submit(
-            {
-              type: 'input',
-              content,
-              whenBusy: 'followUp',
-              requestId,
-              entry: {
-                kind: `automations.${kind}`,
-                data: {
-                  id: sub.id,
-                  name: sub.name,
-                  text,
-                  ...(kind === 'fired' && sub.serves?.by === id
-                    ? {
-                        serves: (({ by: _by, ...serves }) => serves)(sub.serves),
-                        at: sub.lastFireAt ?? 0,
-                      }
-                    : {}),
-                  ...(kind === 'fired' && sub.branches?.by === id
-                    ? { branches: sub.branches.ids, at: sub.lastFireAt ?? 0 }
-                    : {}),
-                },
+          const input: InputSubmissionDraft = {
+            type: 'input',
+            content,
+            whenBusy: 'followUp',
+            requestId,
+            entry: {
+              kind: `automations.${kind}`,
+              data: {
+                id: sub.id,
+                name: sub.name,
+                text,
+                ...(kind === 'fired' && sub.branches?.by === id
+                  ? { branches: sub.branches.ids }
+                  : {}),
               },
             },
-            ctx,
-          )
-          if (kind === 'fired' && sub.serves?.by === id && sub.serves.from === 'remote')
-            servingRun = submitted
-        }
-        const servingRunEnd = await servingRun?.wait(ctx)
-        if (servingRunEnd?.status === 'unanswered') {
-          const { by, ...serves } = sub.serves!
-          await host
-            .harness()
-            .commit(
-              (tx) =>
-                host
-                  .need(MessagesApi)
-                  .dropped(
-                    tx,
-                    by,
-                    serves,
-                    `The run automation ${sub.id} "${sub.name}" woke for your message ${serves.message} ended without an answer (${servingRunEnd.reason}); no result will come from it.`,
-                    servingRunEnd.entry,
-                  ),
-              ctx,
-            )
+          }
+          if (kind === 'fired')
+            await host
+              .harness()
+              .commit((tx) => host.need(MessagesApi).submitFire(tx, conversation, input, sub), ctx)
+          else await conversation.submit(input, ctx)
         }
         await runtime.commit(() => terminal, ctx)
       },
@@ -466,11 +447,14 @@ export function supervisor(
   function retryCleanup(run: Run) {
     delete run.cleanup
   }
+  const drop = (tx: Tx, sub: Automation, why: string) =>
+    host.need(MessagesApi).dropped(tx, sub.id, `Automation ${sub.id} "${sub.name}",`, why)
   async function escalate(tx: Tx, sub: Automation, reason: string) {
     sub.enabled = false
     sub.script!.state = 'failed'
     sub.script!.error = reason
     sub.updatedAt = Date.now()
+    await drop(tx, sub, `failed (${reason})`)
     const event = await host.emit(tx, Escalated, { id: sub.id, reason })
     await deliver(tx, sub, event.id, 'escalated', reason)
   }
@@ -503,6 +487,7 @@ export function supervisor(
       if (cleanRecurringExit) {
         sub.script!.state = 'stopped'
         sub.enabled = false
+        await drop(tx, sub, 'stopped')
       } else if (failed) {
         sub.script!.state = 'investigating'
         const ranLongEnoughToResetFailures =
@@ -791,6 +776,7 @@ export function supervisor(
     status,
     apply,
     escalate,
+    drop,
     watcherYielded,
     open,
     close,

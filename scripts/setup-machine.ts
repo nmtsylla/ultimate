@@ -44,6 +44,8 @@ function unit(description: string, service: string[]) {
     'RestartSec=5',
     'KillSignal=SIGTERM',
     'KillMode=mixed',
+    'Delegate=yes',
+    'DelegateSubgroup=core',
     'TimeoutStopSec=30',
     '',
     '[Install]',

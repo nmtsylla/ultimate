@@ -29,7 +29,15 @@ import {
   treeName,
   treePath,
 } from './tree.ts'
-import { contains, createLander, landerCheckout, landerPath, log } from './lander.ts'
+import {
+  contains,
+  createLander,
+  activeLandingCards,
+  hasPendingLanderReport,
+  landerCheckout,
+  landerPath,
+  log,
+} from './lander.ts'
 import type {
   LandResult,
   SubmitResult,
@@ -70,6 +78,18 @@ export const Workspaces = defineDoc<WorkspaceIndex>({
     }
   },
 })
+export async function landingPending(tx: Tx, id: ConversationId) {
+  const index = await tx.doc(Workspaces, ROOT_CONVERSATION_ID)
+  return (
+    index.queue.some((item) => item.conversationId === id) ||
+    (await hasPendingLanderReport(tx, index, id))
+  )
+}
+
+export async function pendingLandingCards(tx: Tx) {
+  return activeLandingCards(tx, await tx.doc(Workspaces, ROOT_CONVERSATION_ID))
+}
+
 const tasksStartedByThisModule = new Set<number>()
 async function landerIdle(tx: Tx, index: WorkspaceIndex, source: string) {
   const running = index.landers[source]
@@ -205,7 +225,19 @@ export function workspaces(host: Host) {
   const Lander = createLander(host, Workspaces, serializeSourceWrites, {
     starter: async (id, context) => host.want(Branches)?.starter(id, context),
     working: async (tx, id) => (await host.want(Branches)?.working(tx, id)) ?? false,
-    conclude: async (tx, id) => void (await host.need(ConversationsApi).concludeIn(tx, [id])),
+    conclude: async (tx, id) =>
+      void (await host.need(ConversationsApi).concludeIn(tx, [id], 'landing')),
+    reserveLanding: async (tx, id, result) => {
+      await host.want(Branches)?.reserveLanding(tx, id, result)
+    },
+    retireLanding: async (tx, result) => {
+      await host.want(Branches)?.retireLanding(tx, result)
+    },
+    submitLanding: async (tx, to, input, id, result) => {
+      const messages = host.want(Branches)
+      if (messages) await messages.submitLanding(tx, to, input, id, result)
+      else await to.submit(tx, input)
+    },
     release: (id, context) => release([id], context),
   })
   type IdleReadBeforeWrites = string

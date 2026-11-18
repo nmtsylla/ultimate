@@ -3,7 +3,12 @@
  * Other extensions create, look up, land and discard a conversation's worktree through this service.
  */
 import type { Context } from '@earendil-works/chord/context'
-import type { ConversationId, Tx } from '@earendil-works/pi-durable'
+import type {
+  ConversationHandle,
+  ConversationId,
+  InputSubmissionDraft,
+  Tx,
+} from '@earendil-works/pi-durable'
 import { defineApi } from '../../shared/extension-api.ts'
 import type { git } from '../../lib/git.ts'
 import type { Workspaces, workspaces } from './workspaces.ts'
@@ -25,6 +30,10 @@ export type WorkspaceService = {
   git: typeof git
   /** The worktree index document (`ultimate.workspaces` on the root), for reads inside a transaction. */
   doc: typeof Workspaces
+  /** Inside `tx`, check for a queue entry for `id` or a nonterminal lander in its `report` phase for `id`. */
+  landingPending(tx: Tx, id: ConversationId): Promise<boolean>
+  /** In `tx`, list the result IDs whose live lander still has a concluding card to admit. */
+  pendingLandingCards(tx: Tx): Promise<string[]>
   /** Make the project folder a Git repository with a first commit, so worktrees and landing work. */
   setupGit(): Promise<void>
 }
@@ -38,6 +47,18 @@ export type BranchesService = {
   starter(id: ConversationId, ctx: Context): Promise<ConversationId | undefined>
   /** Inside `tx`: whether branch `id` has work of its own that will wake it again, so a landing leaves it open. */
   working(tx: Tx, id: ConversationId): Promise<boolean>
+  /** Reserve a landing card for the branch's owned requests in the transaction that concludes it. */
+  reserveLanding(tx: Tx, id: ConversationId, result: string): Promise<void>
+  /** Retire the reservation for a landing card that will not be admitted. */
+  retireLanding(tx: Tx, result: string): Promise<void>
+  /** Replace the branch's reservation with the landing card's submission in the admission transaction. */
+  submitLanding(
+    tx: Tx,
+    to: ConversationHandle,
+    input: InputSubmissionDraft,
+    id: ConversationId,
+    result: string,
+  ): Promise<void>
 }
 /** What a landing asks about the branch it landed; messages provides it. `want` it. */
 export const Branches = defineApi<BranchesService>()('workspaces.branches')

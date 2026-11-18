@@ -177,7 +177,7 @@ async function concludeAndStopOtherTrees(
 ) {
   const harness = host.harness()
   const { tree, callerWouldWaitForItself } = await harness.commit(async (tx) => {
-    const owned = await concludeIn(host, tx, ids)
+    const owned = await concludeIn(host, tx, ids, from ?? 'user')
     return { tree: owned, callerWouldWaitForItself: from !== undefined && owned.has(from) }
   }, context)
   const stopped: ConversationId[] = []
@@ -223,6 +223,7 @@ export async function concludeIn(
   host: Pick<ExtensionHost, 'doc' | 'emit'>,
   tx: Tx,
   ids: ConversationId[],
+  by: ConversationId | 'landing' | 'user',
 ) {
   for (const id of ids) {
     const found = await tx.conversation(id)
@@ -246,7 +247,7 @@ export async function concludeIn(
     ...Object.fromEntries(ids.map((id) => [id, now])),
   }
   const tree = await ownedTree(tx, ids)
-  await host.emit(tx, Concluded, { conversations: [...tree].toSorted((a, b) => a - b) })
+  await host.emit(tx, Concluded, { conversations: [...tree].toSorted((a, b) => a - b), by })
   return tree
 }
 
@@ -316,7 +317,7 @@ export default (host: ExtensionHost) => {
   host.want(Previews)
   host.implement(ConversationsApi, {
     subject: (id, caller) => subject(host, id, caller),
-    concludeIn: (tx, ids) => concludeIn(host, tx, ids),
+    concludeIn: (tx, ids, by) => concludeIn(host, tx, ids, by),
     concludedIn,
     summaryModel: () => summaryModel(host),
     summaryModelStatus: () => summaryModelStatus(host),
