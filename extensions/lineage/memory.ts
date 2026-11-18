@@ -396,7 +396,14 @@ export function memorizeTask(
       )
     } catch (error) {
       if (runtime.signal.aborted) throw error
-      host.notice(`Could not distil memory from landing ${submission}: ${String(error)}`)
+      // A landing is distilled once, so this is a hole in the root's memory that nothing retries, not one operation
+      // that the next reply replaces: it stays in Diagnostics instead of scrolling away as a toast.
+      host.notice(
+        `Memory from landing ${submission} in #${root} was not written: ${String(error)}`,
+        {
+          diagnostic: true,
+        },
+      )
       return runtime.commit(() => done, ctx)
     }
     let ops: unknown[] | undefined
@@ -435,7 +442,9 @@ export function memorizeTask(
       return done
     }, ctx)
     if (refused && retry)
-      host.notice(`Memory from landing ${submission} in #${root} was not written: ${refused}`)
+      host.notice(`Memory from landing ${submission} in #${root} was not written: ${refused}`, {
+        diagnostic: true,
+      })
   }
   return defineTask<MemorizeInput, State, null>({
     name: 'lineage.memorize',

@@ -40,6 +40,7 @@ import {
   requestSummary,
   setAutomaticSummaries,
   askSummaryModel,
+  summarySession,
   IntentSummarized,
   FeatureChanged,
   TitleChanged,
@@ -203,6 +204,7 @@ async function launch(subagents = false, initialIntent = false, root = false, br
     ...(branch ? { abstract: 'Ask: improve sidebar\nDiverged: none\nState: done' } : {}),
   }))
   const questionsRequested = vi.fn<() => Promise<void>>(async () => {})
+  const notices: string[] = []
   const install = (registry = server.host.registry) => {
     vi.spyOn(server.host.modelRuntime, 'getAvailableSnapshot').mockImplementation(() => [
       server.host.faux!.getModel(),
@@ -220,7 +222,7 @@ async function launch(subagents = false, initialIntent = false, root = false, br
             metadata: Metadata,
             userHome: server.host.userHome,
             projectSettings: async () => ({}),
-            notice: () => {},
+            notice: (message: string) => notices.push(message),
             modelRuntime: {
               getAvailableSnapshot: () =>
                 server.host.modelRuntime
@@ -266,6 +268,7 @@ async function launch(subagents = false, initialIntent = false, root = false, br
     generated,
     questionsRequested,
     abstract,
+    notices,
     spawn: (answer: EntryId) =>
       server.harness.commit(
         (tx) =>
@@ -276,7 +279,7 @@ async function launch(subagents = false, initialIntent = false, root = false, br
               metadata: Metadata,
               userHome: server.host.userHome,
               projectSettings: async () => ({}),
-              notice: () => {},
+              notice: (message: string) => notices.push(message),
               modelRuntime: server.host.modelRuntime,
             },
             server.root.id,
@@ -760,6 +763,29 @@ it('isolates provider errors', async () => {
   expect(fixture.generated).toHaveBeenCalledTimes(4)
 })
 
+it('reports a failing summary model as a toast, then as a diagnostic while it keeps failing', async () => {
+  const fixture = await launch()
+  const failure = '400: {"type":"MissingSessionID"}'
+  fixture.generated.mockRejectedValueOnce(new Error(failure))
+  await fixture.exchange()
+  // One failed request is a toast: it happened, and the next reply asks again.
+  await until(() => fixture.notices.length === 1)
+  expect(fixture.notices).toEqual([`Summary request to openai-codex/gpt-6-luna failed: ${failure}`])
+  // A model that keeps failing leaves titles, abstracts and a landing's memory unwritten: it stays in Diagnostics.
+  fixture.generated.mockRejectedValueOnce(new Error(failure))
+  await fixture.exchange()
+  await until(() => fixture.notices.length === 2)
+  expect(fixture.notices[1]).toBe(
+    `Summaries from openai-codex/gpt-6-luna keep failing (2 in a row): ${failure}. Titles, abstracts and a landing's memory stay unwritten until it answers.`,
+  )
+  // An answer clears the streak, so a later failure is a toast again rather than a stale diagnostic.
+  await fixture.exchange()
+  fixture.generated.mockRejectedValueOnce(new Error(failure))
+  await fixture.exchange()
+  await until(() => fixture.notices.length === 3)
+  expect(fixture.notices[2]).toBe(`Summary request to openai-codex/gpt-6-luna failed: ${failure}`)
+})
+
 it('assesses owned children without renaming them, summarizes ownerless forks, and does not backfill', async () => {
   const fixture = await launch()
   const root = fixture.server.root
@@ -1214,6 +1240,38 @@ it('validates reply-only JSON and rejects a malformed activity', async () => {
       generateSummary(models, 'Reply', new AbortController().signal, false, { model: luna }),
     ).rejects.toThrow('Invalid reply summary response')
   }
+})
+
+it('names a session on every summary request, which a gateway that routes by session requires', async () => {
+  const stream = vi.fn<Models['streamSimple']>(() => {
+    const events = new AssistantMessageEventStream()
+    events.push({
+      type: 'done',
+      reason: 'stop',
+      message: fauxAssistantMessage('{"activity":"Done."}'),
+    })
+    events.end()
+    return events
+  })
+  const models = {
+    getModel: () => ({ provider: 'opencode-go', id: 'deepseek-v4.1-flash' }),
+    streamSimple: stream,
+  } as unknown as Models
+  const model = { provider: 'opencode-go', id: 'deepseek-v4.1-flash', thinking: 'high' } as const
+  // opencode.ai's gateway answers 400 MissingSessionID to a request that names no session, which silenced every
+  // summary, title, abstract and landing memory before #16904: the receipt names the conversation's own.
+  await generateSummary(models, 'Reply', new AbortController().signal, false, {
+    model,
+    sessionId: summarySession(42 as ConversationId),
+  })
+  expect(stream.mock.calls.at(-1)![2]).toMatchObject({
+    sessionId: 'summary-42',
+    disableContinuation: true,
+  })
+  // A caller that names none still sends one of its own, so no summary request is left one the provider rejects.
+  await generateSummary(models, 'Reply', new AbortController().signal, false, { model })
+  expect(stream.mock.calls.at(-1)![2]?.sessionId).toEqual(expect.any(String))
+  expect(stream.mock.calls.at(-1)![2]?.sessionId).not.toBe('summary-42')
 })
 
 it('publishes initial intent while the main model request is blocked, once across retries and reopen', async () => {

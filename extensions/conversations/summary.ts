@@ -1,3 +1,4 @@
+import { randomUUID } from 'node:crypto'
 import { copyJson } from '@earendil-works/chord/json'
 import {
   defineDoc,
@@ -215,6 +216,55 @@ export type SummaryReceipt = {
   save?(response: ResponseReceipt): Promise<ResponseReceipt>
   /** Output tokens the answer may spend, reasoning included, within the model's own limit; default 2048. */
   maxTokens?: number
+  /** The session the request is routed as; default one of its own. Never an agent's, which would continue its thread. */
+  sessionId?: string
+}
+
+/**
+ * The session a conversation's summary, title and abstract requests are routed as. Stable per conversation, so its
+ * requests reach the same provider replica and share their prompt cache, and never the agent's own session id.
+ */
+export function summarySession(id: ConversationId) {
+  return `summary-${id}`
+}
+
+/**
+ * Summary failures per model since it last answered, per host. A model that keeps failing leaves titles, summaries,
+ * abstracts and a landing's memory unwritten until someone notices, which one toast does not achieve.
+ */
+const failing = new WeakMap<object, Map<string, number>>()
+
+function failuresOf(host: object) {
+  const found = failing.get(host)
+  if (found) return found
+  const counts = new Map<string, number>()
+  failing.set(host, counts)
+  return counts
+}
+
+/**
+ * Report that a summary request to `model` failed with `cause`: the first failure is a toast, the second and every one
+ * after it a diagnostic, since a model that keeps failing is a property of the setup rather than of one request.
+ */
+export function reportSummaryFailure(
+  host: Pick<SummaryModelHost, 'notice'>,
+  model: string,
+  cause: string,
+) {
+  const counts = failuresOf(host)
+  const failures = (counts.get(model) ?? 0) + 1
+  counts.set(model, failures)
+  if (failures === 1) host.notice(`Summary request to ${model} failed: ${cause}`)
+  else
+    host.notice(
+      `Summaries from ${model} keep failing (${failures} in a row): ${cause}. Titles, abstracts and a landing's memory stay unwritten until it answers.`,
+      { diagnostic: true },
+    )
+}
+
+/** That model answered a summary again, so its failures are over. */
+export function summaryAnswered(host: object, model: string | undefined) {
+  if (model !== undefined) failuresOf(host).delete(model)
 }
 
 /** Ask the receipt's summary model once, or return the response the receipt already holds. */
@@ -236,6 +286,11 @@ export async function askSummaryModel(
       ...(thinking === 'off' ? {} : { reasoning: thinking }),
       maxTokens: Math.min(receipt.maxTokens ?? 2048, model.maxTokens || Infinity),
       signal,
+      // opencode.ai's gateway answers 400 MissingSessionID to a request that names no session, which silenced every
+      // summary, title, abstract and landing memory on this machine (see #16904): it adds x-opencode-session from
+      // this. `disableContinuation` keeps a provider's own server-side threads out of a one-shot request.
+      sessionId: receipt.sessionId ?? randomUUID(),
+      disableContinuation: true,
     },
   )
   const receive = async (answer: AssistantMessage) => {
@@ -741,6 +796,7 @@ export function summaryBehavior(host: SummaryHost, generate = generateSummary) {
               {
                 model,
                 response,
+                sessionId: summarySession(runtime.conversationId),
                 save: async (received) => {
                   response = await runtime.memo('response', received, context)
                   return response
@@ -771,6 +827,9 @@ export function summaryBehavior(host: SummaryHost, generate = generateSummary) {
           ),
           checkpoint.answer,
         )
+        // A failed request is reported once the commit settled it, never in the middle of one.
+        let failed: string | undefined
+        let answered = false
         await runtime.commit(async (tx) => {
           // Ledger addition and terminal settlement are atomic, even for invalid or stale results.
           await accountResponse(tx, runtime.conversationId, response)
@@ -802,13 +861,16 @@ export function summaryBehavior(host: SummaryHost, generate = generateSummary) {
           const outcome = !result ? 'error' : usable ? 'ready' : 'stale'
           if (!refresh) state.assessmentStatus = outcome
           if (checkpoint.summary) state.status = outcome
-          if (!result || !usable)
+          if (!result || !usable) {
+            if (!result) failed = failure ?? 'no result'
             return discard(tx, runtime.conversationId, {
               reason: result ? 'stale' : 'error',
               cause: result ? 'newer work or a reset' : (failure ?? 'no result'),
               ...modelOf(response, model),
               at: now,
             })
+          }
+          answered = true
           // Lineage reads conversation records, so the abstract goes before this transaction's first entry.
           if (checkpoint.abstract && result.abstract && completed !== undefined) {
             await host.want?.(Trees)?.abstract(tx, runtime.conversationId, {
@@ -869,6 +931,11 @@ export function summaryBehavior(host: SummaryHost, generate = generateSummary) {
           }
           return terminal
         }, context)
+        // A failed summary costs a title, a summary, an abstract and a landing's memory: say so where the user sees it,
+        // not only in an entry nothing reads. A superseded result is not a failure.
+        if (failed)
+          reportSummaryFailure(host, modelOf(response, model).model ?? 'the summary model', failed)
+        else if (answered) summaryAnswered(host, modelOf(response, model).model)
       },
     },
     abort: async (task, runtime, context) => {
