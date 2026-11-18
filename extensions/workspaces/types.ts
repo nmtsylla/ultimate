@@ -1,5 +1,6 @@
 import type { ConversationId, EntryId, TaskId } from '@earendil-works/pi-durable'
 import type { ConversationSubject } from '../conversations/types.ts'
+import type { OverBudgetCheck } from './checks.ts'
 
 export type Workspace = {
   path: string
@@ -40,12 +41,13 @@ export type Landed = {
   commits: string[]
   paths: string[]
   flaky: string[]
+  overBudget?: OverBudgetCheck[]
   weight?: Weight
 }
 export type Weight = { added: number; removed: number; tokens: number }
 export type LanderCheck = {
   command: CheckCommand
-  result: 'passed' | 'failed' | 'flaky'
+  result: 'passed' | 'failed' | 'flaky' | 'over budget'
   summary?: LastOutputLine
 }
 export type LanderStep = {
@@ -62,6 +64,7 @@ export type LanderOutcome = {
   commits?: string[]
   paths?: string[]
   flaky?: string[]
+  overBudget?: OverBudgetCheck[]
   weight?: Weight
   pushed?: PushedRemoteBranch
   needsRestart?: boolean
