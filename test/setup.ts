@@ -2,6 +2,7 @@ import { mkdtempSync, realpathSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterAll } from 'vitest'
+import { sandboxBlocked } from '../scripts/setup-machine.ts'
 import { testTempPrefix } from './sweep-temp.ts'
 
 // macOS's TMPDIR is a symlink (/var -> /private/var); git and the server report the resolved path.
@@ -19,6 +20,10 @@ for (const key of Object.keys(process.env))
 // concurrent tests never see them come back. Inside a preview ULTIMATE_MODEL would otherwise override every model a test
 // expects (#537493: test/default-model.test.ts, which imports no helpers, failed a preview's suite).
 for (const key of Object.keys(process.env)) if (key.startsWith('ULTIMATE_')) delete process.env[key]
+// The browser tests launch the same Chromium the installed service does, and `pnpm setup:machine` gives that
+// service the sandbox switch where the kernel blocks unprivileged user namespaces; tests inherit the switch,
+// never the supervisor's other ULTIMATE_* variables.
+if (sandboxBlocked()) process.env.ULTIMATE_CHROMIUM_SANDBOX = '0'
 // Test servers, and the previews they start, must never publish on this machine's tailnet: they find no Tailscale CLI.
 process.env.TAILSCALE_COMMAND = join(testTmpdir, 'no-tailscale')
 // No background `git maintenance run --auto --detach` after test commits: Git 2.54 runs it after a source
