@@ -827,7 +827,7 @@ it('writes a card into @ultimate’s own conversation when its run fails after o
   expect(f.notices[0]).toContain('After one retry')
 })
 
-it('retries @ultimate’s own failure once from its card, and writes nothing else', async () => {
+it('gives @ultimate’s own failure a card that starts no run, whose Retry resubmits once', async () => {
   const f = await fixture((transcript) =>
     inputText(transcript) === 'fail' ? error('429 Too Many Requests') : fauxAssistantMessage('ok'),
   )
