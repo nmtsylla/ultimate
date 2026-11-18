@@ -27,12 +27,9 @@ const FailureCard = renderEntry(FailureEntry, function FailureCard({ entry }) {
   )
   const [retry, setRetry] = useState<'idle' | 'retrying' | 'done'>('idle')
   const [problem, setProblem] = useState<string>()
-  const offersRetry =
-    failure.failedTask !== undefined &&
-    failure.conversation === conversationId &&
-    !busy &&
-    !answered &&
-    retry !== 'done'
+  const failedTask = failure.failedTask
+  const shownHere =
+    failure.conversation === conversationId && !busy && !answered && retry !== 'done'
   return (
     <Card className="border-l-destructive/60">
       <header className="flex flex-wrap items-center gap-2 border-b border-border/60 px-3 py-2 font-mono text-[11px] text-muted-foreground">
@@ -53,7 +50,7 @@ const FailureCard = renderEntry(FailureEntry, function FailureCard({ entry }) {
         {failure.retried && <p className="text-[11px] text-muted-foreground">after one retry</p>}
         {problem && <p className="font-mono text-[11px] break-words text-destructive">{problem}</p>}
       </div>
-      {offersRetry && (
+      {failedTask !== undefined && shownHere && (
         <footer className="flex items-center justify-between gap-2 border-t border-border/60 px-3 py-1.5 font-mono text-[11px] text-muted-foreground">
           <span>{retry === 'retrying' ? 'resuming' : 'nothing resumes it by itself'}</span>
           <Button
@@ -62,11 +59,8 @@ const FailureCard = renderEntry(FailureEntry, function FailureCard({ entry }) {
             onClick={async () => {
               setRetry('retrying')
               await api
-                .action(RetryAction, {
-                  conversation: failure.conversation,
-                  failedTask: failure.failedTask as number,
-                })
-                .then(() => setRetry('done'))
+                .action(RetryAction, { failedTask })
+                .then((result) => setRetry(result.resumed ? 'done' : 'idle'))
                 .catch((error: unknown) => {
                   setProblem(errorMessage(error))
                   setRetry('idle')
