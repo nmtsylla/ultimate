@@ -1,5 +1,4 @@
-import { access, mkdir, readdir } from 'node:fs/promises'
-import { homedir } from 'node:os'
+import { mkdir } from 'node:fs/promises'
 import { dirname, join, resolve } from 'node:path'
 import { randomUUID } from 'node:crypto'
 import {
@@ -19,51 +18,15 @@ import { strEnum } from '../../lib/schema.ts'
 import { formatDimensionNote, resizeImage } from '@earendil-works/pi-coding-agent'
 import { defineExtension, defineTool, section } from '@earendil-works/pi-durable'
 import { chromium, type Browser, type BrowserContext, type Page } from 'playwright-core'
+import { chromiumBinary } from '../../lib/chromium.ts'
 import { groupTarget, identify } from '../../lib/process-group.ts'
 import type { ExtensionHost } from '../../server/extensions.ts'
 import { fetchAssets, sourceFrames } from '../../lib/source-frames.ts'
 import { watchSteer } from '../../lib/steer.ts'
 
-/** Chromium executables Playwright may have installed under `home` for `platform`, newest first. */
-export async function playwrightChromiums(
-  home: string,
-  platform = process.platform,
-  arch = process.arch,
-) {
-  const [cache, executables] =
-    platform === 'darwin'
-      ? [
-          join(home, 'Library/Caches/ms-playwright'),
-          [
-            `chrome-mac-${arch}/Google Chrome for Testing.app/Contents/MacOS/Google Chrome for Testing`,
-            // Older Playwright releases installed their own Chromium build.
-            'chrome-mac/Chromium.app/Contents/MacOS/Chromium',
-          ],
-        ]
-      : [join(home, '.cache/ms-playwright'), ['chrome-linux64/chrome']]
-  return (await readdir(cache).catch(() => []))
-    .filter((name) => name.startsWith('chromium-'))
-    .toSorted((a, b) => b.localeCompare(a, 'en', { numeric: true }))
-    .flatMap((name) => executables.map((executable) => join(cache, name, executable)))
-}
-
 export async function browserBinary() {
-  const candidates = [
-    process.env.ULTIMATE_CHROMIUM,
-    '/usr/bin/chromium',
-    '/usr/bin/google-chrome-stable',
-    // Before Google Chrome: on a managed Mac its policy can disallow remote debugging, and it then drops every page.
-    ...(await playwrightChromiums(homedir())),
-    '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome',
-  ].filter((path): path is string => !!path)
-  for (const path of candidates) {
-    try {
-      await access(path)
-      return path
-    } catch {
-      /* try the next installed browser */
-    }
-  }
+  const binary = await chromiumBinary()
+  if (binary) return binary
   throw new Error(
     'No Chromium found. Set ULTIMATE_CHROMIUM, install /usr/bin/chromium or /usr/bin/google-chrome-stable (Google Chrome in /Applications on macOS), or run `npx playwright install chromium` (~/.cache/ms-playwright on Linux, ~/Library/Caches/ms-playwright on macOS).',
   )

@@ -1,10 +1,12 @@
 import { expect, it } from 'vitest'
 import {
   type AgentState,
+  chromiumLibs,
   loadAgents,
   loginPath,
   renderAgents,
   renderUnits,
+  sandboxBlocked,
   selfUnits,
 } from '../scripts/setup-machine.ts'
 
@@ -14,6 +16,7 @@ const options = {
   home: '/home/u',
   node: '/opt/node/bin/node',
   path: '/home/u/app/node_modules/.bin:/home/u/.local/share/pnpm/.tools/@pnpm+exe/11.8.0/bin:/opt/mise/shims:/home/u/.local/bin:/usr/bin',
+  browser: {},
 }
 
 function brokenShell(): never {
@@ -90,6 +93,60 @@ it('refuses paths systemd would read differently, naming the path', () => {
     )
   // Ordinary punctuation in paths stays allowed.
   expect(() => renderUnits({ ...options, project: '/home/u/work/my-app_2.0+x@y' })).not.toThrow()
+  // A browser path from the machine's environment is checked like the rest.
+  expect(() =>
+    renderUnits({ ...options, browser: { ULTIMATE_CHROMIUM: '/opt/My Chrome/chrome' } }),
+  ).toThrow('ULTIMATE_CHROMIUM path "/opt/My Chrome/chrome" contains whitespace')
+})
+
+it('renders the browser environment this machine needs, in order after PATH', () => {
+  const chromium = '/home/u/.cache/ms-playwright/chromium-1248/chrome-linux64/chrome'
+  const [unit] = renderUnits({
+    ...options,
+    browser: {
+      ULTIMATE_CHROMIUM: chromium,
+      ULTIMATE_CHROMIUM_SANDBOX: '0',
+      LD_LIBRARY_PATH: '/home/u/.local/lib/chrome-deps',
+    },
+  })
+  expect(line(unit.content, 'Environment')).toEqual([
+    'Environment=PATH=/opt/node/bin:/opt/mise/shims:/home/u/.local/bin:/usr/bin:/usr/local/bin:/bin',
+    'Environment=ULTIMATE_NO_OPEN=1',
+    `Environment=ULTIMATE_CHROMIUM=${chromium}`,
+    'Environment=ULTIMATE_CHROMIUM_SANDBOX=0',
+    'Environment=LD_LIBRARY_PATH=/home/u/.local/lib/chrome-deps',
+  ])
+  // A machine with no Chromium gets no browser lines at all, never an empty LD_LIBRARY_PATH.
+  const [plain] = renderUnits(options)
+  expect(line(plain.content, 'Environment')).toEqual([
+    'Environment=PATH=/opt/node/bin:/opt/mise/shims:/home/u/.local/bin:/usr/bin:/usr/local/bin:/bin',
+    'Environment=ULTIMATE_NO_OPEN=1',
+  ])
+})
+
+it('decides the browser lines from the machine: its library folder, whether the kernel can sandbox', () => {
+  const libs = '/home/u/.local/lib/chrome-deps'
+  expect(chromiumLibs('/home/u', (path) => path === libs)).toBe(libs)
+  expect(chromiumLibs('/home/u', () => false)).toBeUndefined()
+  const blocked = (switches: Record<string, string>, platform: NodeJS.Platform = 'linux') =>
+    sandboxBlocked((file) => {
+      const value = switches[file]
+      if (value === undefined) throw new Error(`${file} is absent`)
+      return value
+    }, platform)
+  // Ubuntu 23.10+ restricts unprivileged user namespaces through AppArmor.
+  expect(blocked({ '/proc/sys/kernel/apparmor_restrict_unprivileged_userns': '1\n' })).toBe(true)
+  // Older Debian kernels switch them off entirely.
+  expect(blocked({ '/proc/sys/kernel/unprivileged_userns_clone': '0\n' })).toBe(true)
+  // A kernel that allows them keeps Chromium's sandbox on.
+  expect(
+    blocked({
+      '/proc/sys/kernel/apparmor_restrict_unprivileged_userns': '0\n',
+      '/proc/sys/kernel/unprivileged_userns_clone': '1\n',
+    }),
+  ).toBe(false)
+  // macOS has neither switch, and leaves the sandbox alone.
+  expect(blocked({}, 'darwin')).toBe(false)
 })
 
 /** The text of each top-level <key> in a rendered plist, keyed by name; the value is the raw XML after it. */
