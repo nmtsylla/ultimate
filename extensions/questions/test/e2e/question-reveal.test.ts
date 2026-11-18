@@ -110,22 +110,27 @@ const gap = (page: Page, id: number) =>
   }, id)
 
 /**
- * How far a revealed card settles from the strip plus the bubble's own top margin, which should be the only space
- * between them. The strip arrives from an action after the jump and the reveal re-holds the row whenever the
- * transcript, the strip or the scroller resizes, so the distance is final only once it has held across frames.
+ * How far a revealed card sits from the strip plus the bubble's own top margin, which should be the only space between
+ * them. The reveal never reaching the strip is a failure this measures, not a wait to outlast, so it keeps the tight
+ * bound: the strip arrives from an action after the jump, and the reveal re-holds the row whenever the transcript, the
+ * strip or the scroller resizes, so the distance is read once it has held across frames rather than after a pause.
  */
 async function drift(page: Page, id: number) {
-  await until(async () => Math.abs((await gap(page, id)) - 8) < 4)
+  await until(async () => Math.abs((await gap(page, id)) - 8) < 4, 10_000)
   return Math.abs((await settledGap(page, id)) - 8)
 }
 
-/** The gap once it has held for three animation frames. */
+/**
+ * The gap once it has held for three animation frames, or after 120 frames with whatever it is then, so a card or strip
+ * that never arrives fails the assertion with a distance instead of stalling the test.
+ */
 const settledGap = (page: Page, id: number) =>
   page.evaluate(
     (message) =>
       new Promise<number>((settle) => {
         let last = Number.NaN
         let held = 0
+        let frames = 0
         const frame = () => {
           const card = document.querySelector(`[data-message-outgoing="${message}"]`)
           const strip = document.querySelector('[data-ui="pinned-prompt"]')
@@ -135,7 +140,8 @@ const settledGap = (page: Page, id: number) =>
               : Number.NaN
           held = Math.abs(distance - last) < 0.5 ? held + 1 : 0
           last = distance
-          if (held >= 3) settle(distance)
+          frames += 1
+          if (held >= 3 || frames >= 120) settle(distance)
           else requestAnimationFrame(frame)
         }
         requestAnimationFrame(frame)

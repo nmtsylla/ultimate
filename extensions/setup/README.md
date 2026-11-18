@@ -31,9 +31,10 @@ explicitly never falls back: the features are off and the row warns.
 ## Work cgroup diagnostics
 
 Memory isolation of branch work is set up by the core before any extension loads, so `reportWorkIsolation` says in
-Diagnostics what went wrong when it could not be: a `work.memoryMax` that is not a size (the default is used instead),
-and a work subtree that could not be prepared, which leaves branch work uncapped and an OOM able to take the core. The
-facet reopens on a settings change (`reloadOnSettings`), so a fixed value clears its notice.
+Diagnostics what went wrong when it could not be: a `work.memoryMax` that is not a size (it is passed over, and the
+notice names what caps branch work instead), and a work subtree that could not be prepared, which leaves branch work
+uncapped and an OOM able to take the core. The facet reopens on a settings change (`reloadOnSettings`), so a fixed
+value clears its notice; the cap itself is read at core start, so a changed value applies at the next start.
 
 ## The agent's note
 

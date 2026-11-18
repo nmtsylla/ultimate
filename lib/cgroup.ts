@@ -44,26 +44,34 @@ function memoryMaxBytes(value: unknown) {
 }
 
 export async function workIsolation(projectRoot: string, userHome: string) {
-  const problems: string[] = []
-  const fallback = defaultMemoryMax()
-  let memoryMax = fallback
-  for (const settings of [
-    async () => (await import('./project-setup.ts')).projectSettings(projectRoot, userHome),
-    () => readSettings(userSettingsPath(userHome)),
-  ]) {
-    const value = ((await settings()).work as { memoryMax?: unknown } | undefined)?.memoryMax
+  const rejected: { layer: 'project' | 'user'; value: unknown }[] = []
+  let applied: { memoryMax: string; layer: 'project' | 'user' } | undefined
+  for (const [layer, read] of [
+    [
+      'project',
+      async () => (await import('./project-setup.ts')).projectSettings(projectRoot, userHome),
+    ],
+    ['user', () => readSettings(userSettingsPath(userHome))],
+  ] as const) {
+    const value = ((await read()).work as { memoryMax?: unknown } | undefined)?.memoryMax
     if (value === undefined) continue
     const bytes = memoryMaxBytes(value)
-    if (bytes) {
-      memoryMax = bytes
-      break
+    if (!bytes) {
+      rejected.push({ layer, value })
+      continue
     }
-    problems.push(
-      `Invalid work.memoryMax ${JSON.stringify(value)}: expected bytes or a cgroup size such as "12G"; using ${fallback} bytes`,
-    )
+    applied = { memoryMax: bytes, layer }
+    break
   }
+  const used = applied
+    ? `${applied.memoryMax} from the ${applied.layer} settings`
+    : `the default ${defaultMemoryMax()} bytes`
+  const problems = rejected.map(
+    ({ layer, value }) =>
+      `Invalid work.memoryMax ${JSON.stringify(value)} in the ${layer} settings: expected bytes or a cgroup size such as "12G"; branch work is capped at ${used}, and a changed value applies at the next start`,
+  )
   if (shared.setupFailure) problems.push(shared.setupFailure)
-  return { memoryMax, problems }
+  return { memoryMax: applied?.memoryMax ?? defaultMemoryMax(), problems }
 }
 
 const ownerAlive = (leaf: string) => {

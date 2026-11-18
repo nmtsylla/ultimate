@@ -387,7 +387,7 @@ it('reports a work.memoryMax that is not a size in Diagnostics, and nothing once
   expect(notices).toHaveLength(1)
   expect(notices[0].diagnostic).toBe(true)
   expect(notices[0].message).toMatch(
-    /^Invalid work\.memoryMax "12 Q": expected bytes or a cgroup size such as "12G"; using \d+ bytes$/,
+    /^Invalid work\.memoryMax "12 Q" in the user settings: expected bytes or a cgroup size such as "12G"; branch work is capped at the default \d+ bytes, and a changed value applies at the next start$/,
   )
   notices.length = 0
   await writeFile(settings, '{"work":{"memoryMax":"12G"}}')
