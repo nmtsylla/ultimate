@@ -1,12 +1,15 @@
-import { parseEntryId, offsetEntryId } from '../../lib/ids.ts'
+import { parseConversationId, parseEntryId, offsetEntryId, parseTaskId } from '../../lib/ids.ts'
 import type {
   ConversationId,
   Cursor,
+  SubmissionDraft,
   SubmissionRecord,
   TaskRecord,
   Tx,
 } from '@earendil-works/pi-durable'
+import type { Context } from '@earendil-works/chord/context'
 import { BACKGROUND_CONTEXT as context } from '@earendil-works/chord/context'
+import { implementAction } from '../../lib/actions.ts'
 import { onCommit } from '../../lib/commits.ts'
 import type { JsonValue } from '@earendil-works/chord/json'
 import type { AssistantMessage } from '@earendil-works/pi-ai'
@@ -20,6 +23,7 @@ import {
   ROOT_CONVERSATION_ID,
 } from '@earendil-works/pi-durable'
 import type { ExtensionHost } from '../../server/extensions.ts'
+import type { ActionContext } from '../../server/actions.ts'
 import { rateLimited } from '../../lib/rate-limit.ts'
 import { Messages } from '../messages/api.ts'
 import type { Message } from '../messages/api.ts'
@@ -27,6 +31,7 @@ import { Standing, Subagents } from '../subagents/api.ts'
 import { Roots, Tally } from '../lineage/api.ts'
 import { WatchdogApi } from './api.ts'
 import type { ReportedFailure } from './api.ts'
+import { RetryAction } from './refs.ts'
 import type { Failure } from './refs.ts'
 import { FailureEntry } from './entries.ts'
 
@@ -143,6 +148,38 @@ export function diagnose(error: string, assistant?: AssistantMessage) {
 type Generation = TaskRecord<JsonValue, JsonValue, JsonValue>
 const sharedOrderTaskEntryBoundary = (id: Generation['id']) => parseEntryId(Number(id))
 
+type Resumable = {
+  readonly id: ConversationId
+  submit(draft: SubmissionDraft, context: Context): Promise<unknown>
+}
+
+async function resumeFailedRun(
+  conversation: Resumable,
+  commit: (change: (tx: Tx) => Promise<void>) => Promise<unknown>,
+  failedTask: number,
+  error: string,
+  ctx: Context,
+) {
+  const requestId = `watchdog-retry:${failedTask}`
+  let submitted = false
+  let busy = false
+  await commit(async (tx) => {
+    submitted = !!(await tx.submissionByRequest(conversation.id, requestId))
+    busy = (await tx.doc(LiveDoc, conversation.id)).run !== undefined
+  })
+  if (submitted || busy) return false
+  await conversation.submit(
+    {
+      type: 'input',
+      content: `Your previous run stopped with a provider error (${error}). Continue from where you left off; check what you already did and do not redo it.`,
+      requestId,
+      whenBusy: 'followUp',
+    },
+    ctx,
+  )
+  return true
+}
+
 function advanceCompletedPrefixWatermark(receipts: { highWater?: number }, tasks: Generation[]) {
   for (const task of tasks) {
     if (task.state.status !== 'terminal') break
@@ -196,6 +233,40 @@ async function details(tx: Tx, metadata: ExtensionHost['metadata'], task: Genera
   return { upper, lower, step, assistant, title }
 }
 
+export const userActions = ['retry']
+
+export const actions = {
+  [RetryAction.name]: implementAction(RetryAction, async (args, { host }: ActionContext) => {
+    const { conversation, failedTask } = (args ?? {}) as {
+      conversation?: number
+      failedTask?: number
+    }
+    if (!Number.isSafeInteger(conversation))
+      throw new Error('conversation must be a conversation id')
+    if (!Number.isSafeInteger(failedTask)) throw new Error('failedTask must be a failed run')
+    const harness = host.harness()
+    const task = await harness.getTask(parseTaskId(failedTask as number), context)
+    if (
+      task === undefined ||
+      task.conversationId !== conversation ||
+      task.state.status !== 'terminal' ||
+      task.state.outcome.status !== 'failed'
+    )
+      throw new Error(`Task ${failedTask} is not a failed run of #${conversation}`)
+    const child = await harness.conversation(parseConversationId(conversation), context)
+    if (!child) throw new Error(`Conversation #${conversation} is gone`)
+    return {
+      resumed: await resumeFailedRun(
+        child,
+        (change) => harness.commit(change, context),
+        failedTask as number,
+        task.state.outcome.error.message,
+        context,
+      ),
+    }
+  }),
+}
+
 export default function watchdog(host: ExtensionHost) {
   const Watchdog = defineTask<
     Failure & {
@@ -216,30 +287,22 @@ export default function watchdog(host: ExtensionHost) {
       retry: async (task, runtime, ctx) => {
         const { conversation, failedTask, error } = task.input
         const child = (await runtime.conversation(conversation, ctx))!
-        let retryAlreadySubmitted = false
-        let busy = false
-        await runtime.commit(async (tx) => {
-          retryAlreadySubmitted = !!(await tx.submissionByRequest(
-            child.id,
-            `watchdog-retry:${failedTask}`,
-          ))
-          busy = (await tx.doc(LiveDoc, child.id)).run !== undefined
-        }, ctx)
-        if (!retryAlreadySubmitted && !busy)
-          await child.submit(
-            {
-              type: 'input',
-              content: `Your previous run stopped with a provider error (${error}). Continue from where you left off; check what you already did and do not redo it.`,
-              requestId: `watchdog-retry:${failedTask}`,
-              whenBusy: 'followUp',
-            },
-            ctx,
-          )
+        await resumeFailedRun(
+          child,
+          (change) =>
+            runtime.commit(async (tx) => {
+              await change(tx)
+            }, ctx),
+          failedTask,
+          error,
+          ctx,
+        )
         await runtime.commit(() => terminal, ctx)
       },
       report: async (task, runtime, ctx) => {
         const { conversation, title, error, step, hint, retried, failedTask, recipient } =
           task.input
+        const toItself = recipient === conversation && !task.input.delivery
         const data: Failure = {
           conversation,
           title,
@@ -247,12 +310,12 @@ export default function watchdog(host: ExtensionHost) {
           step,
           retried,
           ...(hint ? { hint } : {}),
+          ...(toItself ? { failedTask } : {}),
         }
-        const content = `[run failed] #${conversation} "${title}": ${error}. Last step: ${step}.${retried ? ' After one automatic retry.' : ''}${hint ? ` ${hint}.` : ''}`
-        if (recipient === conversation && !task.input.delivery) {
-          host.notice(content)
-        } else {
-          const target = (await runtime.conversation(recipient, ctx))!
+        const content = `[run failed] #${conversation} "${title}": ${error}. Last step: ${step}.${retried ? ' After one retry.' : ''}${hint ? ` ${hint}.` : ''}`
+        const target = (await runtime.conversation(recipient, ctx))!
+        if (toItself) host.notice(content)
+        else
           await target.submit(
             {
               type: 'input',
@@ -263,8 +326,13 @@ export default function watchdog(host: ExtensionHost) {
             },
             ctx,
           )
-        }
         await runtime.commit(async (tx) => {
+          if (toItself)
+            await target.submit(tx, {
+              type: 'write',
+              entry: { kind: FailureEntry.kind, data },
+              requestId: `watchdog-report:${failedTask}`,
+            })
           const reported = await tx.doc(Reported, ROOT_CONVERSATION_ID)
           reported.failures.push({
             ...data,
@@ -272,8 +340,8 @@ export default function watchdog(host: ExtensionHost) {
           })
           reported.failures.sort((a, b) => b.at - a.at)
           reported.failures.splice(FAILURE_LIMIT)
-          const actions = Object.values((await tx.doc(Subagents, recipient)).actions)
-          const actionWhoseFailureIsNowReported = actions.findLast(
+          const subagentActions = Object.values((await tx.doc(Subagents, recipient)).actions)
+          const actionWhoseFailureIsNowReported = subagentActions.findLast(
             (candidate) => candidate.conversationId === conversation,
           )
           if (actionWhoseFailureIsNowReported?.status === 'failed') {
