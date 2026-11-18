@@ -1481,6 +1481,43 @@ it.concurrent('reruns only the failing command of a group, reports its output tw
   expect(runs(submissions[0])).toEqual(['if [ failed', 'if [ flaky', 'true passed'])
   for (const event of checks) expect(event.data.ms).toEqual(expect.any(Number))
 })
+it.concurrent('records a check that ran out of its budget and passed its rerun as over budget, not flaky', async () => {
+  const f = await lander({})
+  const id = await f.create()
+  await f.service.ready(id, context)
+  const marker = join(f.directory, 'budget-marker')
+  const command = `if [ -f '${marker}' ]; then echo RERUN_OK; exit 0; fi; printf ' FAIL  test/a.test.ts > was still running when its budget ran out\\n'; touch '${marker}'; while true; do printf 'still running\\n'; sleep 0.1; done`
+  f.host.projectSettings = async () => ({ lander: { checks: [{ command, timeout: 1 }] } })
+  await commit((await f.service.get(id, context))!.path)
+  await f.service.submit(id, 'None', context)
+  const report = (await submitted(f, id)).at(-1)!
+  expect(report).toContain('landed as')
+  expect(report).toContain('Over budget: ')
+  expect(report).toContain('; its rerun passed in')
+  expect(report).not.toContain('Flaky')
+  expect(report).not.toContain('check failed twice')
+  // The run was cut off mid-suite, so nothing it printed is re-listed as a failing test.
+  expect(report).not.toContain('Failed tests so far')
+  const log = (await landerLog(f)).log
+  const killed = log.find((line) => line.check?.result === 'over budget' && line.output)!
+  // A timeout caps the no-output limit to itself, so either limit names the same 1 s budget; the
+  // wording of each is proven in test/lander-checks.test.ts rather than by the host's timing here.
+  expect(killed.output).toMatch(/^(Timed out after|Stalled: no output for) 1 s\n/)
+  expect(killed.output).not.toContain('Failed tests so far')
+  // The line the run printed stays exactly once, where it printed it, and is not listed again.
+  expect(killed.output!.match(/FAIL/g)).toHaveLength(1)
+  expect(log.filter((line) => line.check).map((line) => line.check)).toEqual([
+    { command, result: 'over budget' },
+    { command, result: 'over budget', summary: 'RERUN_OK' },
+  ])
+  expect(log.at(-1)).toMatchObject({
+    outcome: 'landed',
+    overBudget: [{ command, budget: { seconds: 1 }, rerunMs: expect.any(Number) }],
+  })
+  expect(log.at(-1)!.flaky).toEqual([])
+  const checks = await f.host.eventLog.recent({ events: [CheckRan], limit: 20 })
+  expect(checks.map((event) => event.data.result).toSorted()).toEqual(['over budget', 'timeout'])
+})
 it.concurrent('fast-forwards the worktree that has the target checked out, past unrelated dirty files but not over overlapping ones', async () => {
   const f = await lander({})
   const id = await f.create()
@@ -1849,7 +1886,7 @@ it.concurrent('resumes a group after a restart without a third run of its twice-
   // The failing member's rerun outcome is stored while its sibling still runs.
   await until(async () => {
     const record = await f.opened.harness.commit((tx) => tx.task(task), context)
-    return record?.memos?.[`check:${submission}:1:0.0:rerun`] !== undefined
+    return record?.memos?.[`check-run:${submission}:1:0.0:rerun`] !== undefined
   })
   await held.started()
   await f.reopen()

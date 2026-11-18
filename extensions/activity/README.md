@@ -10,14 +10,14 @@ Each event is one quiet line with an icon for its kind, what happened and its ag
 - **Root** (`lineage.rooted`): the new root by its title.
 - **Notice** (`ultimate.notice`): the extension and its message, amber for warnings, wrapping to two lines. It opens the
   conversation it happened in when the event's trace context names one.
-- **Check** (`workspaces.check`): a lander check that failed, timed out or was flaky, with its command. Passed checks
-  stay out.
+- **Check** (`workspaces.check`): a lander check that failed, timed out, was flaky or ran over its budget, with its
+  command. Passed checks stay out.
 - **Backup** (`cloud.backup`): a finished or failed backup, with the Worker's sentence for a refused one. Started
   backups stay out.
 - **Escalation** (`automations.escalated`): the automation and its reason.
 
-Errors (failed checks and backups, escalations, error notices) get a red edge and tint, warnings (flaky checks,
-warning notices) an amber one, and the header counts them with a link to the Problems filter.
+Errors (failed checks and backups, escalations, error notices) get a red edge and tint, warnings (flaky or over-budget
+checks, warning notices) an amber one, and the header counts them with a link to the Problems filter.
 
 Chips filter by kind (all, landed, branches, problems) and a range keeps the last 24h, 7d (default) or all; both are
 kept in UI state. Rows come from `useEvents({ events })`, which streams the root's `ultimate.event-feed` document

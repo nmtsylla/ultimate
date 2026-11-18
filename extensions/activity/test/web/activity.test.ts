@@ -1,7 +1,7 @@
 import { createElement } from 'react'
 import { renderToStaticMarkup } from 'react-dom/server'
 import { expect, it, vi } from 'vitest'
-import { Feed, joined, shows } from '../../feed.tsx'
+import { Feed, joined, shows, tone } from '../../feed.tsx'
 import type { ActivityEvent } from '../../feed.tsx'
 
 vi.mock('@/sdk', async () => ({
@@ -152,6 +152,28 @@ it('keeps only warnings and errors under Problems, and drops started backups eve
   ]
   expect(list.filter((item) => shows('problems', item)).map((item) => item.id)).toEqual([2, 5])
   expect(list.filter((item) => shows('all', item)).map((item) => item.id)).toEqual([1, 2, 4, 5])
+})
+
+it('draws an over-budget or flaky check as a warning and a failed or stopped one as an error', () => {
+  const check = (result: string) =>
+    event(1, 'workspaces.check', minutes(1), {
+      submission: 's',
+      command: 'pnpm test',
+      result,
+      ms: 1000,
+    })
+  expect(
+    ['passed', 'flaky', 'over budget', 'failed', 'timeout'].map((result) => [
+      result,
+      tone(check(result)),
+    ]),
+  ).toEqual([
+    ['passed', 'quiet'],
+    ['flaky', 'warning'],
+    ['over budget', 'warning'],
+    ['failed', 'error'],
+    ['timeout', 'error'],
+  ])
 })
 
 it('joins the live feed, rows it dropped and older pages without gaps or repeats', () => {
