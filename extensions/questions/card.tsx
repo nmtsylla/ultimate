@@ -100,9 +100,7 @@ export function MessageQuestions({
       card={card}
       questions={questions}
       keys={questions.length > 0 && (keys ?? shown)}
-      submit={(answers, note, keepalive) =>
-        answer({ answers, ...(note ? { note } : {}) }, keepalive)
-      }
+      submit={answer}
       {...(answerWith
         ? {}
         : {
@@ -359,7 +357,7 @@ function Card({
   card: string
   questions: Question[]
   keys: boolean
-  submit: (answers: Answer[], note?: string, keepalive?: boolean) => Promise<unknown>
+  submit: (reply: Reply, keepalive?: boolean) => Promise<unknown>
   pending?: { save: (reply: Reply) => void; clear: () => void }
   reply: (text: string) => Promise<unknown>
   dismiss: () => Promise<unknown>
@@ -463,13 +461,16 @@ function Card({
     committed.current = true
     cancelAdvanceAfterCheck.current?.()
     setLockedIn({ drafts, note })
-    const committedReply: Reply = { answers: ready, ...(extra ? { note: extra } : {}) }
+    const committedReply: Reply & { answers: Answer[] } = {
+      answers: ready,
+      ...(extra ? { note: extra } : {}),
+    }
     pending?.save(committedReply)
     const fire = (keepalive = false) => {
       undoWindowSend.current = undefined
       setPhase('sending')
       setError(undefined)
-      submit(committedReply.answers ?? [], committedReply.note, keepalive).then(
+      submit(committedReply, keepalive).then(
         () => {
           pending?.clear()
           setPhase('sent')

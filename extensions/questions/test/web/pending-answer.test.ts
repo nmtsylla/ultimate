@@ -44,13 +44,6 @@ describe('an answer committed inside the undo window', () => {
     expect(storage.size).toBe(0)
   })
 
-  it('is taken back by Undo', () => {
-    const storage = stubStorage()
-    savePendingAnswer(5, reply)
-    removePendingAnswer(5)
-    expect(storage.size).toBe(0)
-  })
-
   it('stays when its request never reached the server', async () => {
     const storage = stubStorage()
     savePendingAnswer(5, reply)
@@ -87,6 +80,20 @@ describe('an answer committed inside the undo window', () => {
     )
     expect(sent).toEqual([])
     expect(storage.size).toBe(0)
+  })
+
+  it('keeps a question whose answer is not a number, and drops one it cannot parse', async () => {
+    const storage = stubStorage()
+    storage.set(pendingAnswerKey(5), '{not json')
+    localStorage.setItem('ext.questions.pending-answers.eight', JSON.stringify(reply))
+    const sent: number[] = []
+    await sendPendingAnswers(open, (messageId) => {
+      sent.push(messageId)
+      return Promise.resolve()
+    })
+    expect(sent).toEqual([])
+    expect(storage.size).toBe(1)
+    expect(storage.has(pendingAnswerKey(5))).toBe(false)
   })
 
   it('answers several questions of one page independently', async () => {

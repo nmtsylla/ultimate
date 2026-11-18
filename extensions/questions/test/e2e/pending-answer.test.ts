@@ -124,6 +124,36 @@ it('sends an answer whose pagehide request never reached the server', async () =
   expect(await answers()).toHaveLength(1)
 })
 
+it('keeps the answer when its resend fails, and sends it on the load after', async () => {
+  const { page, card, answers, message } = await openCard()
+  await page.evaluate((path) => {
+    const real = window.fetch
+    window.fetch = (input: RequestInfo | URL, init?: RequestInit) => {
+      const url =
+        typeof input === 'string' ? input : input instanceof Request ? input.url : input.href
+      return url.includes(path)
+        ? Promise.reject(new TypeError('Failed to fetch'))
+        : real(input, init)
+    }
+  }, ANSWER)
+  let posts = 0
+  // The load after the lost unload send cannot reach the server either: the answer has to wait, not be thrown away.
+  await page.route(`**${ANSWER}`, (route) => {
+    posts += 1
+    return route.abort()
+  })
+  await sendThenLeave(page, card, message)
+  await until(async () => posts > 0)
+  await page.waitForTimeout(500)
+  expect(await kept(page, message)).toContain('answers')
+  expect(await answers()).toHaveLength(0)
+  await page.unroute(`**${ANSWER}`)
+  await page.reload()
+  await until(async () => (await answers()).length > 0)
+  expect(await answers()).toHaveLength(1)
+  await until(async () => (await kept(page, message)) === null)
+})
+
 it('sends nothing on the next load after Undo', async () => {
   const { page, card, answers, message } = await openCard()
   await card.getByRole('button', { name: 'Send', exact: true }).click()

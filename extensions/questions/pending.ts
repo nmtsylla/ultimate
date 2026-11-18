@@ -1,13 +1,13 @@
 import { meansNone } from '../../lib/errors.ts'
 import type { Reply } from './refs.ts'
 
-export const PENDING_ANSWERS_KEY = 'ext.questions.pending-answers'
+const PENDING_ANSWERS = 'ext.questions.pending-answers'
 
 export const PENDING_ANSWER_EXPIRY_MS = 10 * 60 * 1000
 
 type PendingAnswer = Reply & { at: number }
 
-export const pendingAnswerKey = (messageId: number) => `${PENDING_ANSWERS_KEY}.${messageId}`
+export const pendingAnswerKey = (messageId: number) => `${PENDING_ANSWERS}.${messageId}`
 
 function quietly(write: () => void) {
   try {
@@ -35,6 +35,7 @@ function readPendingAnswer(messageId: number): PendingAnswer | undefined {
     const stored = localStorage.getItem(pendingAnswerKey(messageId))
     return stored ? (JSON.parse(stored) as PendingAnswer) : undefined
   } catch (error) {
+    removePendingAnswer(messageId)
     return meansNone(error)
   }
 }
@@ -44,9 +45,8 @@ function pendingAnswerIds() {
   try {
     for (let index = 0; index < localStorage.length; index += 1) {
       const key = localStorage.key(index)
-      if (!key?.startsWith(`${PENDING_ANSWERS_KEY}.`)) continue
-      const id = Number(key.slice(PENDING_ANSWERS_KEY.length + 1))
-      if (Number.isSafeInteger(id)) ids.push(id)
+      const id = key?.startsWith(`${PENDING_ANSWERS}.`) ? key.slice(PENDING_ANSWERS.length + 1) : ''
+      if (/^\d+$/.test(id)) ids.push(Number(id))
     }
   } catch (error) {
     meansNone(error)

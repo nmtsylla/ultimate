@@ -68,10 +68,9 @@ writes the committed answer into `localStorage` (`ext.questions.pending-answers.
 started) the moment the undo window starts, and takes it back on Undo or once the send goes out. On the next load
 `PendingAnswers` (`web.tsx`) sends whatever is still kept, so the answer lands whether or not the unload's request
 survived. Exactly one lands either way: a kept answer whose question no longer waits on the user is dropped without a
-request, and a resend of an answer that did arrive is refused by the same admission, so it is dropped and not doubled.
-A send that fails keeps its answer for the next load. A pending answer older than ten minutes
-(`PENDING_ANSWER_EXPIRY_MS`) is dropped rather than answered late. Side-chat's pinned question sends through its own
-action and keeps its own flow.
+request at all, and one whose send fails stays for the next load, where the admission refuses it once the question has
+settled — dropped there, never doubled. A pending answer older than ten minutes (`PENDING_ANSWER_EXPIRY_MS`) is
+dropped rather than answered late. Side-chat's pinned question sends through its own action and keeps its own flow.
 
 ## Where open questions wait
 
