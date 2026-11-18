@@ -179,11 +179,13 @@ upstream's version and drop this entry.
 
 ### Test suites the fork repaired
 
-**Files:** `extensions/automations/test/automations.test.ts`, `extensions/lineage/test/lineage-abstracts.test.ts`
-**Tests:** `extensions/automations/test/automations.test.ts`, `extensions/lineage/test/lineage-abstracts.test.ts`
+**Files:** `extensions/automations/test/automations.test.ts`, `extensions/automations/test/e2e/automations-scripts.test.ts`, `extensions/lineage/test/lineage-abstracts.test.ts`
+**Tests:** `extensions/automations/test/automations.test.ts`, `extensions/automations/test/e2e/automations-scripts.test.ts`, `extensions/lineage/test/lineage-abstracts.test.ts`
 **Why:** the automations suite counts the runs a scheduler delivered rather than the ones it skipped, so a delivered
-run reads as delivered after a landing; the lineage abstracts test follows the text the landing memory actually writes.
-Both are fork repairs on upstream test files, so upstream may take them over.
+run reads as delivered after a landing; the reload test waits out the documented "supervisor is closing" answer, which
+its sibling close test pins deliberately, instead of depending on how fast a facet reload finishes (it failed twice in
+a lander's e2e run on a loaded host); the lineage abstracts test follows the text the landing memory actually writes.
+All are fork repairs on upstream test files, so upstream may take them over.
 **If it is lost:** a delivered automation counts as skipped and the lineage abstract test asserts a memory shape nothing
 writes any more.
 
