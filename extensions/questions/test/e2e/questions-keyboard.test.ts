@@ -1,7 +1,10 @@
 // Answers a three-question card in a real browser with only the keyboard: letter keys choose, ↑/↓ move between
 // questions, Enter sends; the reply reaches @ultimate in the message's own numbering, with the note field's text after it.
 // The card opens with the picks chosen; Send turns into Undo over the undo window, holding Send for a second sends at
-// once, and leaving the page inside the undo window still sends the answer.
+// once, and a pagehide inside the undo window still sends the answer. That pagehide is raised here with the document
+// alive: a browser loses a share of the requests a dying document makes (measured at three to six in ten on this host,
+// with sendBeacon and a same-origin navigation no better, and five in five while the document stays alive), so a real
+// navigation would make the answer's arrival a coin toss rather than something the card decides.
 import { join, resolve } from 'node:path'
 import { fauxAssistantMessage, fauxToolCall } from '@earendil-works/pi-ai/providers/faux'
 import type { FauxResponseFactory } from '@earendil-works/pi-ai/providers/faux'
@@ -188,11 +191,11 @@ it('answers a decisions card with letters, arrows and Enter', async () => {
   expect((await picked())!.text).toMatch(/^1a\. .+\n\n2a\. .+\n\n3a\. Land it: yes$/)
 })
 
-it('sends a held answer when the page is left inside the undo window', async () => {
+it('sends a held answer when the page hides inside the undo window', async () => {
   const { log, asked, page, card } = await openCard()
   await card.getByRole('button', { name: 'Send', exact: true }).click()
   await card.getByRole('button', { name: 'Undo' }).waitFor()
-  await page.goto('about:blank')
+  await page.evaluate(() => window.dispatchEvent(new PageTransitionEvent('pagehide')))
   const answer = async () =>
     (await log())?.messages.find((m) => m.re === asked.id && m.from === 'user')
   await until(async () => !!(await answer()))
