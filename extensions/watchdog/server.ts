@@ -1,9 +1,10 @@
-import { parseConversationId, parseEntryId, offsetEntryId, parseTaskId } from '../../lib/ids.ts'
+import { parseEntryId, offsetEntryId, parseTaskId } from '../../lib/ids.ts'
 import type {
   ConversationId,
   Cursor,
   SubmissionDraft,
   SubmissionRecord,
+  TaskOutcomeError,
   TaskRecord,
   Tx,
 } from '@earendil-works/pi-durable'
@@ -63,7 +64,10 @@ const Receipts = defineDoc<{ highWater?: number; tasks: Record<string, true> }>(
   initial: () => ({ tasks: {} }),
 })
 const terminal = { status: 'terminal', outcome: { status: 'completed', result: null } } as const
-const failed = (task: TaskRecord<JsonValue, JsonValue, JsonValue>) =>
+type FailedRun = TaskRecord<JsonValue, JsonValue, unknown> & {
+  state: { status: 'terminal'; outcome: { status: 'failed'; error: TaskOutcomeError } }
+}
+const failed = (task: TaskRecord<JsonValue, JsonValue, unknown>): task is FailedRun =>
   task.kind === GenerationTask.definition.name &&
   task.state.status === 'terminal' &&
   task.state.outcome.status === 'failed' &&
@@ -237,24 +241,14 @@ export const userActions = ['retry']
 
 export const actions = {
   [RetryAction.name]: implementAction(RetryAction, async (args, { host }: ActionContext) => {
-    const { conversation, failedTask } = (args ?? {}) as {
-      conversation?: number
-      failedTask?: number
-    }
-    if (!Number.isSafeInteger(conversation))
-      throw new Error('conversation must be a conversation id')
+    const { failedTask } = (args ?? {}) as { failedTask?: number }
     if (!Number.isSafeInteger(failedTask)) throw new Error('failedTask must be a failed run')
     const harness = host.harness()
     const task = await harness.getTask(parseTaskId(failedTask as number), context)
-    if (
-      task === undefined ||
-      task.conversationId !== conversation ||
-      task.state.status !== 'terminal' ||
-      task.state.outcome.status !== 'failed'
-    )
-      throw new Error(`Task ${failedTask} is not a failed run of #${conversation}`)
-    const child = await harness.conversation(parseConversationId(conversation), context)
-    if (!child) throw new Error(`Conversation #${conversation} is gone`)
+    if (task === undefined || !failed(task))
+      throw new Error(`Task ${failedTask} is not a failed run`)
+    const child = await harness.conversation(task.conversationId, context)
+    if (!child) throw new Error(`Conversation #${task.conversationId} is gone`)
     return {
       resumed: await resumeFailedRun(
         child,
@@ -327,12 +321,6 @@ export default function watchdog(host: ExtensionHost) {
             ctx,
           )
         await runtime.commit(async (tx) => {
-          if (toItself)
-            await target.submit(tx, {
-              type: 'write',
-              entry: { kind: FailureEntry.kind, data },
-              requestId: `watchdog-report:${failedTask}`,
-            })
           const reported = await tx.doc(Reported, ROOT_CONVERSATION_ID)
           reported.failures.push({
             ...data,
@@ -351,6 +339,12 @@ export default function watchdog(host: ExtensionHost) {
             )
             if (input && failedInput(input)) actionWhoseFailureIsNowReported.status = 'given-up'
           }
+          if (toItself)
+            await target.submit(tx, {
+              type: 'write',
+              entry: { kind: FailureEntry.kind, data },
+              requestId: `watchdog-report:${failedTask}`,
+            })
           return terminal
         }, ctx)
       },

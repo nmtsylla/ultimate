@@ -831,10 +831,7 @@ it('gives @ultimate’s own failure a card that starts no run, whose Retry resub
   const f = await fixture((transcript) =>
     inputText(transcript) === 'fail' ? error('429 Too Many Requests') : fauxAssistantMessage('ok'),
   )
-  const retry = () =>
-    actions.retry({ conversation: f.ultimate, failedTask }, {
-      host: f.host,
-    } as unknown as ActionContext)
+  const retry = () => actions.retry({ failedTask }, { host: f.host } as unknown as ActionContext)
   await (await f.submit(f.ultimate, 'fail')).wait(context)
   await until(async () => (await f.entries()).length === 1)
   const { failedTask, ...card } = (await f.entries())[0].data as Failure & { failedTask: number }

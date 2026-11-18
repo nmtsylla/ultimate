@@ -14,7 +14,7 @@ export type Failure = {
 }
 
 /** Resume the failed run behind a card in @ultimate's own conversation: one resubmission, none while it runs. */
-export const RetryAction = actionRef<
-  { conversation: ConversationId; failedTask: number },
-  { resumed: boolean }
->('watchdog', 'retry')
+export const RetryAction = actionRef<{ failedTask: number }, { resumed: boolean }>(
+  'watchdog',
+  'retry',
+)
