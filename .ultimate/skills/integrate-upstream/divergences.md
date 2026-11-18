@@ -42,7 +42,7 @@ routine work on the fast one. New lineage branches are armed automatically unles
 ### Fork CLI lifecycle: background start, list, stop, foreground
 
 **Files:** `bin/ultimate.ts`, `lib/lock.ts`, `package.json`
-**Tests:** `test/lock.test.ts`, `test/e2e/project.test.ts`
+**Tests:** `test/lock.test.ts`, `test/e2e/project.test.ts`, `test/e2e/reset.test.ts`, `test/e2e/supervisor-helpers.ts`
 **Docs:** `README.md`, `docs/running.md`
 **Why:** plain `ultimate [dir]` starts a project's supervisor in the background and returns; `ultimate list` shows the
 running folders with their local and current Tailscale URLs; `ultimate stop [dir]` stops one; `--foreground` keeps the
@@ -68,6 +68,7 @@ manifest) `diagnostic`, and leave failed operations transient.
 
 **Files:** `lib/chromium.ts`, `scripts/setup-machine.ts`, `extensions/browser/server.ts`, `test/setup.ts`
 **Tests:** `test/chromium.test.ts`, `test/setup-machine.test.ts`
+**Docs:** `extensions/browser/README.md`
 **Why:** the screenshot and browser tools need a Chromium, the library folder it loads from and, where the kernel
 blocks unprivileged user namespaces, `--no-sandbox`. `lib/chromium.ts` resolves the binary once for the browser
 extension, `pnpm setup:machine` and the tests; the rendered unit carries `ULTIMATE_CHROMIUM`, `LD_LIBRARY_PATH`
@@ -120,8 +121,9 @@ passing the oldest `at` you have as `until` walks the log backwards without repe
 
 ### Tool papercuts from real failures
 
-**Files:** `extensions/todos/text.ts`, `extensions/todos/server.ts`, `extensions/coding-tools/server.ts`, `extensions/codemode/server.ts`, `extensions/subagents/server.ts`
-**Tests:** `extensions/todos/test/todos.test.ts`, `extensions/coding-tools/test/coding-tools.test.ts`, `extensions/codemode/test/codemode.test.ts`
+**Files:** `extensions/todos/text.ts`, `extensions/todos/server.ts`, `extensions/todos/panel.tsx`, `extensions/coding-tools/server.ts`, `extensions/codemode/server.ts`, `extensions/subagents/server.ts`, `tsconfig.web.json`
+**Tests:** `extensions/todos/test/todos.test.ts`, `extensions/coding-tools/test/coding-tools.test.ts`
+**Docs:** `extensions/todos/README.md`, `extensions/codemode/README.md`, `extensions/coding-tools/README.md`, `extensions/subagents/README.md`
 **Why:** each came from a measured failure on another project: the to-do limit and its message live once and the tool
 names the limit on its parameter; a failed multi-hunk `edit` names the offending hunk and says nothing was written;
 codemode's `project` arguments say they take a name, never a path or an id; `subagent.task` says what a brief contains.
@@ -131,6 +133,7 @@ codemode's `project` arguments say they take a name, never a path or an id; `sub
 
 **Files:** `extensions/conversations/summary.ts`, `extensions/conversations/summary-model.ts`
 **Tests:** `extensions/conversations/test/conversations-summary.test.ts`
+**Docs:** `extensions/conversations/README.md`
 **Why:** every summary request names the session, otherwise `opencode.ai` rejected all of them ("session not found") and
 titles, abstracts and reply summaries silently fell back.
 **If it is lost:** summaries fail on that provider again, quietly.
@@ -173,6 +176,16 @@ is a link, an unreachable machine says it is unavailable instead of showing zero
 it. The one local adaptation is exporting the existing `userConfiguredRemotes`. When upstream merges the PR, take
 upstream's version and drop this entry.
 **If it is lost:** the rail stops showing other machines, and the rail's and codemode's tests for them fail.
+
+### Test suites the fork repaired
+
+**Files:** `extensions/automations/test/automations.test.ts`, `extensions/lineage/test/lineage-abstracts.test.ts`
+**Tests:** `extensions/automations/test/automations.test.ts`, `extensions/lineage/test/lineage-abstracts.test.ts`
+**Why:** the automations suite counts the runs a scheduler delivered rather than the ones it skipped, so a delivered
+run reads as delivered after a landing; the lineage abstracts test follows the text the landing memory actually writes.
+Both are fork repairs on upstream test files, so upstream may take them over.
+**If it is lost:** a delivered automation counts as skipped and the lineage abstract test asserts a memory shape nothing
+writes any more.
 
 ### A trusted source copy carries no real project automations
 
@@ -232,6 +245,7 @@ when the lockfile moves, pushes `origin`, wakes @ultimate only when the range ne
 
 **Mission Control** was its own extension, `extensions/mission-control/` (a surface, a fleet action, a test), built in
 conversation 2400 (commits `01136fe4`..`22974dc3`) and removed in `d22b236b` together with the `status` fields it had
-added (`url`, `setup`, `goal`), its `setup` and `goal` API additions and its `mission-control` settings key. Upstream
-never had it. A merge must not resurrect the folder, the key or those fields; the `extensions/status` differences that
-remain against upstream are leftovers of the removal (one README sentence and a mock parameter in its test).
+added (`url`, `setup`, `goal`), its `setup` and `goal` API additions and the `defaultOff` entry it put in
+`shared/extension-api.ts` (with one line in `docs/settings.md`). Upstream never had it. A merge must not resurrect the
+folder, that entry or those fields; the `extensions/status` differences that remain against upstream are leftovers of
+the removal (two README sentences, a retitled test and a mock parameter).

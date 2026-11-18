@@ -11,7 +11,8 @@ integration is a branch that runs this procedure, and an integration that confli
 
 Read `divergences.md`, next to this file, before you touch a conflict: it is the maintained list of what the fork does
 differently, with the files and tests that prove it. Do not re-derive it from `git log`; correct the file instead when
-the merge shows it is out of date. Read memory `host-runs-short-of-resources` for the checks.
+the merge shows it is out of date. Read this project's memory about the host running short of resources
+(`host-runs-short-of-resources`, if this clone has it) for the checks.
 
 This is integration work, not design: keep upstream's architecture and make the fork's behaviour fit it. Never drop a
 fork feature, and never choose one side wholesale in a file that holds both.
@@ -24,8 +25,9 @@ node .ultimate/skills/integrate-upstream/inventory.ts
 ```
 
 It prints commits behind and ahead, the `git merge-tree` conflict list, which divergences the incoming range touches
-with their tests and docs, whether the lockfile moved, and whether the landing needs a restart or a unit change. It is
-read-only. `--ref <remote/branch>` reads another range.
+with their tests and docs, whether packages moved, and whether the landing needs a restart or a unit change. It merges
+nothing and writes no working-tree file (the `merge-tree` probe writes tree objects only). `--ref <remote/branch>`
+reads another range.
 
 Behind 0: there is nothing to integrate; say so and stop.
 
@@ -110,7 +112,7 @@ Two changes the restart tool cannot apply:
 
 - **`bin/`** is the supervisor, which outlives the swap: only a real stop and start (`pnpm start`, or the service)
   applies it.
-- **The unit** — `scripts/setup-machine.ts`, the service files: run `pnpm setup:machine` on the host clone. It writes
+- **The unit** — `scripts/setup-machine.ts`: run `pnpm setup:machine` on the host clone. It writes
   the units, runs `systemctl --user daemon-reload`, `enable --now` for every unit, restarts each unit it replaced, and
   for the one it is running inside it refuses and says `ultimate.service changed: restart ultimate.service yourself.`
   (on macOS, `com.ultimate.app changed: restart it yourself.`).

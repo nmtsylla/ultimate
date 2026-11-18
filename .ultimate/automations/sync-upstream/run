@@ -151,16 +151,17 @@ async function onePass() {
     return fire(`merging upstream/main failed: ${merged.err}`);
   }
 
-  // 7. the merged range may need packages.
+  // 7. the merged range may need packages: a moved lockfile, or patches that pnpm install re-applies.
   const changed = lines(git('diff', '--name-only', `${before}..HEAD`).out);
-  const installed = changed.includes('pnpm-lock.yaml');
+  const installed =
+    changed.includes('pnpm-lock.yaml') || changed.some((path) => path.startsWith('patches/'));
   if (installed) {
     const r = sh('pnpm', ['install', '--frozen-lockfile']);
     if (!r.ok) {
       const tail = lines(r.err || r.out).slice(-3).join(' ');
       return fire(`merged ${short()} but pnpm install failed: ${tail}`);
     }
-    log('installed packages from the merged lockfile');
+    log('installed packages from the merged lockfile and patches');
   }
 
   // 8. push.
@@ -170,7 +171,7 @@ async function onePass() {
   // 9. wake only when a restart is needed.
   const sha = short();
   const count = git('rev-list', '--count', `${before}..HEAD`).out;
-  const areas = ['server/', 'shared/', 'bin/'].filter((dir) =>
+  const areas = ['server/', 'shared/', 'patches/', 'bin/'].filter((dir) =>
     changed.some((p) => p.startsWith(dir)),
   );
   if (installed) areas.push('packages installed');

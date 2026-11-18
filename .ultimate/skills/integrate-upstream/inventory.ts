@@ -9,6 +9,7 @@ import { readFileSync } from 'node:fs'
 import { dirname, join, resolve } from 'node:path'
 import { parseArgs } from 'node:util'
 import { fileURLToPath } from 'node:url'
+import { needsRestart, packagePath } from '../../../lib/layers.ts'
 
 const here = dirname(fileURLToPath(import.meta.url))
 
@@ -146,24 +147,23 @@ for (const entry of touched) {
   for (const test of entry.tests) commands.add(testCommand(test))
 }
 
-const lockfile = incoming.includes('pnpm-lock.yaml')
-if (lockfile)
-  console.log('\nThe lockfile moved: run "pnpm install --frozen-lockfile" before the checks.')
+const packages = incoming.filter((path) => packagePath(path))
+if (packages.length)
+  console.log(
+    `\nPackages moved (${packages.join(', ')}): run "pnpm install --frozen-lockfile" before the checks.`,
+  )
 
 const unit = incoming.includes('scripts/setup-machine.ts')
 const supervisor = incoming.some((path) => path.startsWith('bin/'))
-const restart = incoming.some((path) =>
-  ['server/', 'shared/', 'patches/'].some((dir) => path.startsWith(dir)),
-)
 if (unit)
   console.log(
     '\nThe unit may have changed: after the landing run "pnpm setup:machine" and a real service restart; the restart tool cannot apply a unit change.',
   )
-else if (supervisor)
+if (supervisor)
   console.log(
     '\nbin/ changed: only a real stop and start applies the supervisor; the restart tool does not.',
   )
-else if (restart || lockfile) console.log('\nThe landing needs a host restart after it lands.')
+if (needsRestart(incoming)) console.log('\nThe landing needs a host restart after it lands.')
 
 console.log(
   '\nChecks, in this order and one heavy suite at a time (this host runs short of memory):',
