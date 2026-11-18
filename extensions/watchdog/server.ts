@@ -312,7 +312,7 @@ export default function watchdog(host: ExtensionHost) {
           ...(hint ? { hint } : {}),
           ...(toItself ? { failedTask } : {}),
         }
-        const content = `[run failed] #${conversation} "${title}": ${error}. Last step: ${step}.${retried ? ' After one automatic retry.' : ''}${hint ? ` ${hint}.` : ''}`
+        const content = `[run failed] #${conversation} "${title}": ${error}. Last step: ${step}.${retried ? ' After one retry.' : ''}${hint ? ` ${hint}.` : ''}`
         const target = (await runtime.conversation(recipient, ctx))!
         if (toItself) host.notice(content)
         else

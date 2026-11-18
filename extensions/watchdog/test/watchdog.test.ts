@@ -824,7 +824,7 @@ it('writes a card into @ultimate’s own conversation when its run fails after o
     step: 'model request',
     retried: true,
   })
-  expect(f.notices[0]).toContain('After one automatic retry')
+  expect(f.notices[0]).toContain('After one retry')
 })
 
 it('retries @ultimate’s own failure once from its card, and writes nothing else', async () => {
