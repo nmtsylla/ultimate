@@ -1,8 +1,8 @@
 import { mkdir } from 'node:fs/promises'
 import { join } from 'node:path'
 import { afterEach, expect, it } from 'vitest'
-import { playwrightChromiums } from '../server.ts'
-import { removeTemps, temp } from '../../../test/helpers.ts'
+import { chromiumBinary, playwrightChromiums } from '../lib/chromium.ts'
+import { removeTemps, temp } from './helpers.ts'
 
 afterEach(removeTemps)
 
@@ -49,4 +49,25 @@ it('finds Playwright Chromium in the Linux cache, newest build first', async () 
     join(cache, 'chromium-998', 'chrome-linux64/chrome'),
   ])
   expect(await playwrightChromiums(home, 'darwin', 'arm64')).toEqual([])
+})
+
+it('takes the first Chromium that exists, falling through a stale override and finding none', async () => {
+  const home = '/home/u'
+  const playwright = join(home, '.cache/ms-playwright/chromium-1248/chrome-linux64/chrome')
+  const installed = new Set(['/usr/bin/chromium', playwright])
+  const exists = (path: string) => (installed.has(path) ? Promise.resolve() : Promise.reject())
+  // ULTIMATE_CHROMIUM wins while it is there.
+  expect(await chromiumBinary({ ULTIMATE_CHROMIUM: playwright }, home, 'linux', exists)).toBe(
+    playwright,
+  )
+  // A Playwright build a newer install replaced points at nothing: the next candidate answers instead.
+  expect(
+    await chromiumBinary(
+      { ULTIMATE_CHROMIUM: join(home, '.cache/ms-playwright/chromium-1208/chrome-linux64/chrome') },
+      home,
+      'linux',
+      exists,
+    ),
+  ).toBe('/usr/bin/chromium')
+  expect(await chromiumBinary({}, home, 'linux', () => Promise.reject())).toBeUndefined()
 })

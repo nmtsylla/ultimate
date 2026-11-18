@@ -7,6 +7,7 @@ import { homedir, userInfo } from 'node:os'
 import { dirname, join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { parseArgs } from 'node:util'
+import { chromiumBinary } from '../lib/chromium.ts'
 
 export interface UnitOptions {
   /** The Ultimate clone that holds bin/ultimate.ts. */
@@ -17,6 +18,11 @@ export interface UnitOptions {
   node: string
   /** The user's PATH (`loginPath`), kept after node so the agent finds the same tools as in a terminal. */
   path: string
+  /**
+   * The Chromium environment the service gets on this machine, merged into the unit's Environment: nothing when the
+   * machine has no browser the service could use. `main` decides it; `services` says why each line is there.
+   */
+  browser: Record<string, string>
 }
 
 export interface Unit {
@@ -134,6 +140,41 @@ export function servicePath(node: string, path: string, misread?: RegExp) {
   return [...new Set([dirname(node), ...user, '/usr/local/bin', '/usr/bin', '/bin'])].join(':')
 }
 
+/**
+ * The folder holding the GTK, ATK, ALSA and GBM libraries this machine's Chromium needs and does not have in the
+ * system paths, when it is installed there; the unit passes it as LD_LIBRARY_PATH. An absent folder leaves the line
+ * out instead of rendering it empty.
+ */
+export function chromiumLibs(home: string, exists = existsSync) {
+  const dir = join(home, '.local/lib/chrome-deps')
+  return exists(dir) ? dir : undefined
+}
+
+/**
+ * Whether Chromium's sandbox cannot work on this machine, which the unit answers with ULTIMATE_CHROMIUM_SANDBOX=0.
+ * The sandbox needs unprivileged user namespaces, which AppArmor restricts on Ubuntu 23.10+ and later
+ * (`kernel.apparmor_restrict_unprivileged_userns`) and older Debian kernels switch off entirely
+ * (`kernel.unprivileged_userns_clone`); the launch that fails says "No usable sandbox!".
+ */
+export function sandboxBlocked(
+  read: (file: string) => string = (file) => readFileSync(file, 'utf8'),
+  platform = process.platform,
+) {
+  if (platform !== 'linux') return false
+  const value = (file: string) => {
+    try {
+      return read(file).trim()
+    } catch {
+      // Kernels without that switch have no such restriction, which is the common case.
+      return ''
+    }
+  }
+  return (
+    value('/proc/sys/kernel/apparmor_restrict_unprivileged_userns') === '1' ||
+    value('/proc/sys/kernel/unprivileged_userns_clone') === '0'
+  )
+}
+
 function services(options: UnitOptions, path: string): Service[] {
   const { clone, project, node } = options
   return [
@@ -142,7 +183,15 @@ function services(options: UnitOptions, path: string): Service[] {
       label: 'com.ultimate.app',
       description: `Ultimate (${project})`,
       cwd: project,
-      env: { PATH: path, ULTIMATE_NO_OPEN: '1' },
+      // The browser's environment goes in so reinstalling Ultimate does not leave the screenshot and browser tools
+      // without a Chromium (#16883). `ULTIMATE_CHROMIUM` names the `chrome` launch script Playwright installs, not the
+      // `chrome.bin` beside it: `chrome` puts its build's own libraries on the loader path before exec'ing `chrome.bin`,
+      // which on its own dies with `libatk-1.0.so.0: cannot open shared object file`. LD_LIBRARY_PATH is where this
+      // machine keeps the system libraries Chromium needs and does not install globally (GTK, ATK, ALSA, GBM), and
+      // ULTIMATE_CHROMIUM_SANDBOX=0 answers a kernel that restricts the unprivileged user namespaces Chromium's sandbox
+      // needs, where it would otherwise die with "No usable sandbox!" (extensions/browser/README.md). `main` leaves a
+      // line out where it does not apply.
+      env: { PATH: path, ULTIMATE_NO_OPEN: '1', ...options.browser },
       args: [node, join(clone, 'bin/ultimate.ts'), '--foreground'],
     },
   ]
@@ -151,7 +200,7 @@ function services(options: UnitOptions, path: string): Service[] {
 /** Renders the unit files; pure, so the side effects stay in main. Throws for a path systemd would misread. */
 export function renderUnits(options: UnitOptions): Unit[] {
   const { clone, project, home, node } = options
-  checkPaths({ clone, project, home, node })
+  checkPaths({ clone, project, home, node, ...options.browser })
   // An entry systemd would misread is left out rather than escaped.
   const path = servicePath(node, options.path, special)
   return services(options, path).map((service) => ({
@@ -277,7 +326,7 @@ export function loadAgents(
   }
 }
 
-function main() {
+async function main() {
   if (process.platform !== 'linux' && process.platform !== 'darwin') {
     console.error(
       `pnpm setup:machine supports Linux (systemd) and macOS (launchd), not ${process.platform}.`,
@@ -293,12 +342,27 @@ function main() {
   const dry = values['dry-run'] === true
   const home = homedir()
   const clone = resolve(fileURLToPath(new URL('..', import.meta.url)))
+  // What the unit has to tell the browser on this machine, each line only where it applies: a machine without a
+  // Chromium gets none of them, and one whose kernel can run Chromium's sandbox keeps it.
+  // The Chromium is resolved from what is installed rather than from ULTIMATE_CHROMIUM: run by a running Ultimate, that
+  // variable comes from the unit this run replaces, and taking it back would pin a wrapper the unit already had to work
+  // around (libraries under /tmp, a Playwright build a newer install replaced).
+  const chromium = await chromiumBinary({})
+  const libs = chromiumLibs(home)
+  const browser: Record<string, string> = chromium
+    ? {
+        ULTIMATE_CHROMIUM: chromium,
+        ...(sandboxBlocked() ? { ULTIMATE_CHROMIUM_SANDBOX: '0' } : {}),
+        ...(libs ? { LD_LIBRARY_PATH: libs } : {}),
+      }
+    : {}
   const options = {
     clone,
     project: resolve(values.project ?? clone),
     home,
     node: process.execPath,
     path: loginPath(process.env.PATH ?? ''),
+    browser,
   }
 
   const mkdir = (dir: string) => {
@@ -380,4 +444,4 @@ function query(args: string[]) {
   return execFileSync('systemctl', ['--user', ...args, '--value'], { encoding: 'utf8' }).trim()
 }
 
-if (import.meta.main) main()
+if (import.meta.main) await main()
