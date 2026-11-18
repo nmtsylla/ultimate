@@ -111,13 +111,37 @@ const gap = (page: Page, id: number) =>
 
 /**
  * How far a revealed card settles from the strip plus the bubble's own top margin, which should be the only space
- * between them, and stay so.
+ * between them. The strip arrives from an action after the jump and the reveal re-holds the row whenever the
+ * transcript, the strip or the scroller resizes, so the distance is final only once it has held across frames.
  */
 async function drift(page: Page, id: number) {
-  await until(async () => Math.abs((await gap(page, id)) - 8) < 4, 10_000)
-  await page.waitForTimeout(500)
-  return Math.abs((await gap(page, id)) - 8)
+  await until(async () => Math.abs((await gap(page, id)) - 8) < 4)
+  return Math.abs((await settledGap(page, id)) - 8)
 }
+
+/** The gap once it has held for three animation frames. */
+const settledGap = (page: Page, id: number) =>
+  page.evaluate(
+    (message) =>
+      new Promise<number>((settle) => {
+        let last = Number.NaN
+        let held = 0
+        const frame = () => {
+          const card = document.querySelector(`[data-message-outgoing="${message}"]`)
+          const strip = document.querySelector('[data-ui="pinned-prompt"]')
+          const distance =
+            card && strip
+              ? card.getBoundingClientRect().top - strip.getBoundingClientRect().bottom
+              : Number.NaN
+          held = Math.abs(distance - last) < 0.5 ? held + 1 : 0
+          last = distance
+          if (held >= 3) settle(distance)
+          else requestAnimationFrame(frame)
+        }
+        requestAnimationFrame(frame)
+      }),
+    id,
+  )
 
 it('brings the question card to the top of the view below the pinned strip', async () => {
   const { server, other, asked, browser } = await setup()
