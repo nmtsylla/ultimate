@@ -14,7 +14,7 @@ const enterLeaf =
   'command -p mkdir "$0" && echo 1 > "$0/memory.oom.group" && echo 0 > "$0/cgroup.procs" || exit 1; exec "$@"'
 
 const shared = ((globalThis as Record<symbol, unknown>)[Symbol.for('ultimate.work-cgroup')] ??=
-  {}) as { work?: string }
+  {}) as { work?: string; setupFailure?: string }
 
 export function delegatedCore(cgroupLine = readSelfCgroup()) {
   if (!cgroupLine?.startsWith('0::/')) return undefined
@@ -33,15 +33,37 @@ function readSelfCgroup() {
   }
 }
 
-export async function workMemoryMax(projectRoot: string, userHome: string) {
+const memoryMaxShape = /^[1-9]\d*(?:[KMGTPE]i?B?)?$/
+
+const defaultMemoryMax = () => String(Math.floor(totalmem() * 0.7))
+
+function memoryMaxBytes(value: unknown) {
+  if (typeof value === 'number')
+    return Number.isSafeInteger(value) && value > 0 ? String(value) : undefined
+  return typeof value === 'string' && memoryMaxShape.test(value) ? value : undefined
+}
+
+export async function workIsolation(projectRoot: string, userHome: string) {
+  const problems: string[] = []
+  const fallback = defaultMemoryMax()
+  let memoryMax = fallback
   for (const settings of [
     async () => (await import('./project-setup.ts')).projectSettings(projectRoot, userHome),
     () => readSettings(userSettingsPath(userHome)),
   ]) {
-    const memoryMax = ((await settings()).work as { memoryMax?: unknown } | undefined)?.memoryMax
-    if (typeof memoryMax === 'string' || typeof memoryMax === 'number') return String(memoryMax)
+    const value = ((await settings()).work as { memoryMax?: unknown } | undefined)?.memoryMax
+    if (value === undefined) continue
+    const bytes = memoryMaxBytes(value)
+    if (bytes) {
+      memoryMax = bytes
+      break
+    }
+    problems.push(
+      `Invalid work.memoryMax ${JSON.stringify(value)}: expected bytes or a cgroup size such as "12G"; using ${fallback} bytes`,
+    )
   }
-  return String(Math.floor(totalmem() * 0.7))
+  if (shared.setupFailure) problems.push(shared.setupFailure)
+  return { memoryMax, problems }
 }
 
 const ownerAlive = (leaf: string) => {
@@ -53,7 +75,7 @@ const ownerAlive = (leaf: string) => {
   }
 }
 
-export async function isolateWork(core: string, memoryMax: () => Promise<string>) {
+export async function isolateWork(core: string, memoryMax: string) {
   const service = dirname(core)
   const work = join(service, 'work')
   shared.work = undefined
@@ -61,12 +83,13 @@ export async function isolateWork(core: string, memoryMax: () => Promise<string>
     await mkdir(work).catch(ignoring(exists))
     await writeFile(join(service, 'cgroup.subtree_control'), '+memory')
     await writeFile(join(work, 'cgroup.subtree_control'), '+memory')
-    await writeFile(join(work, 'memory.max'), await memoryMax())
+    await writeFile(join(work, 'memory.max'), memoryMax)
     await writeFile(join(work, 'memory.swap.max'), '4G')
   } catch (error) {
-    console.warn(`Branch work shares the core's memory: ${core}: ${String(error)}`)
+    shared.setupFailure = `Branch work is not memory-capped, so an OOM can take the core: could not prepare ${work}: ${String(error)}`
     return
   }
+  shared.setupFailure = undefined
   shared.work = work
   try {
     for (const leaf of await readdir(work, { withFileTypes: true }))

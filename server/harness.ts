@@ -38,7 +38,7 @@ import { NodeExecutionEnv } from '@earendil-works/pi-durable/env/node'
 import { openNodeSqliteStorage } from '@earendil-works/pi-durable/storage/sqlite/node'
 import { createBuild } from './build.ts'
 import { spawn } from '../lib/spawn.ts'
-import { delegatedCore, isolateWork, workMemoryMax, workSpawn } from '../lib/cgroup.ts'
+import { delegatedCore, isolateWork, workIsolation, workSpawn } from '../lib/cgroup.ts'
 import { applyHttpProxySettings, configureHttpDispatcher } from './http.ts'
 import type { Notice } from '../shared/protocol.ts'
 
@@ -203,7 +203,7 @@ export async function prepareHarness(options: HostOptions) {
     faux,
     async open(resume = true) {
       const core = delegatedCore()
-      if (core) await isolateWork(core, () => workMemoryMax(projectRoot, userHome))
+      if (core) await isolateWork(core, (await workIsolation(projectRoot, userHome)).memoryMax)
       const coreStartForStaleOwnerCheck = identify(process.pid)
       if (!coreStartForStaleOwnerCheck)
         throw new Error(`Cannot identify Ultimate core pid ${process.pid}`)

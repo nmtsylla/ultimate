@@ -28,6 +28,13 @@ no login here, it falls back to the first available of a short known-good list (
 cheapest available model, and says so once as a notice; the Summary model row warns. A model the settings name
 explicitly never falls back: the features are off and the row warns.
 
+## Work cgroup diagnostics
+
+Memory isolation of branch work is set up by the core before any extension loads, so `reportWorkIsolation` says in
+Diagnostics what went wrong when it could not be: a `work.memoryMax` that is not a size (the default is used instead),
+and a work subtree that could not be prepared, which leaves branch work uncapped and an OOM able to take the core. The
+facet reopens on a settings change (`reloadOnSettings`), so a fixed value clears its notice.
+
 ## The agent's note
 
 @ultimate hears about setup through a hidden `setup.note` entry placed
