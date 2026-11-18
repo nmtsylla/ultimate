@@ -170,6 +170,29 @@ it('traces an action through a service, its event and a reactor into another ser
   expect(note.args).toBe('[{"from":"beta.worked"}]')
 })
 
+it('walks the log backwards with an exclusive until bound', async () => {
+  const server = await start()
+  await server.extensions.invoke('alpha', 'go', { n: 1 }, signal, server.root.id)
+  // The reaction writes its rows after the call returns.
+  await until(() => server.extensions.trace.query().length >= 4)
+  const rows = server.extensions.trace.query()
+  expect(rows.length).toBe(4)
+  // Until stops before the time it names, so every oldest-at-it's-time page holds exactly the calls before it.
+  for (const row of rows)
+    expect(server.extensions.trace.query({ until: row.at })).toEqual(
+      rows.filter((older) => older.at < row.at),
+    )
+  expect(
+    server.extensions.trace.query({ until: new Date(Date.now() + 1000).toISOString() }),
+  ).toEqual(rows)
+  expect(server.extensions.trace.query({ since: rows[0].at, until: rows[2].at })).toEqual(
+    rows.filter((row) => row.at > rows[0].at && row.at < rows[2].at),
+  )
+  expect(() => server.extensions.trace.query({ until: 'yesterday' })).toThrow(
+    'Invalid until: yesterday',
+  )
+})
+
 it('records failing service calls and passes the error through unchanged', async () => {
   const server = await start()
   expect(await server.extensions.invoke('alpha', 'fail', null, signal)).toEqual([true, true])

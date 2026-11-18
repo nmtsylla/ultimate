@@ -1022,7 +1022,12 @@ export default function subagents(
                 'Without agent: its standing instructions, after a short neutral base; the task stays its first input.',
             }),
           ),
-          task: opt(str()),
+          task: opt(
+            str({
+              description:
+                'For start: the brief the child works from, self-contained because it starts with none of your context: the goal and why it matters, the scope it may touch and what is off-limits, and the acceptance criteria with the commands that prove them. Point at the sources it reads itself (files, a commit range, `memory <slug>`, `conversation <id> at <entry>`) instead of retelling what you already know.',
+            }),
+          ),
           background: opt(bool()),
           fork: opt(bool()),
           id: opt(int({ minimum: 1 })),

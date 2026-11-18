@@ -3,7 +3,10 @@ Delegate bounded work to child conversations with `subagent`, configure them fro
 ## The `subagent` tool
 
 - `start {agent, task, background?, fork?, isolate?}` starts a child from a definition and returns its answer
-  (foreground) or its id (background). Child ids are conversation ids.
+  (foreground) or its id (background). Child ids are conversation ids. `task` is the child's whole brief: it starts
+  with none of the parent's context, so the goal and why it matters, the scope and what is off-limits, and the
+  acceptance criteria with their commands belong in it, with pointers to the sources it reads itself (files, a commit
+  range, `memory <slug>`, `conversation <id> at <entry>`) rather than a retelling.
 - `message {id, text, steer?}` steers a busy child, or queues a follow-up with `steer: false`.
 - `wait {id}` returns the latest answer; `list` shows your children.
 - `stop {id}` stops the child's current work and pending reporters, even before its run starts. It lists the paths left

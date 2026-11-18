@@ -8,6 +8,7 @@ import { stateTone } from '../messages/ui.tsx'
 import { StandingAction } from '../subagents/ui.tsx'
 import { AddAction, DoneAction, ReopenAction, TodosDoc } from './refs.ts'
 import type { Todo } from './refs.ts'
+import { TODO_TEXT_CHARS } from './text.ts'
 
 const owners: { id: Todo['owner']; label: string }[] = [
   { id: 'user', label: 'you' },
@@ -249,7 +250,7 @@ function AddTodo({ add }: { add: (text: string, owner: Todo['owner']) => Promise
         aria-label="New to-do"
         className="min-h-8 min-w-0 flex-1 bg-transparent px-1 py-1 text-[13px] outline-none placeholder:text-muted-foreground/70"
         disabled={sending}
-        maxLength={300}
+        maxLength={TODO_TEXT_CHARS}
         onChange={(event) => setText(event.target.value)}
         placeholder="Add a to-do…"
         value={text}

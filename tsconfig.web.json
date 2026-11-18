@@ -49,6 +49,7 @@
     "extensions/instance/links.ts",
     "extensions/update/item.ts",
     "extensions/attachments/limits.ts",
+    "extensions/todos/text.ts",
     "extensions/pause/lasted.ts",
     "extensions/pause/parked.ts",
     "extensions/sidebar/work.ts",

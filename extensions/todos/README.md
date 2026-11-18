@@ -7,13 +7,15 @@ nesting: for planned work with tasks and reviews, use `plan`.
 
 The `todos` document on conversation 1 (conversation scope, latest history, initial on fork) holds
 `{ next, items: [{ id, text, owner: 'user' | 'ultimate', at, done? }] }`, oldest first. Text is trimmed, nonempty
-and at most 300 characters. Ticking keeps the newest 50 done items and drops older ones; open items are never dropped.
+and at most 300 characters (`text.ts`, which the panel's field takes its length from too); a longer one is refused
+with its own length: `The to-do is 301 characters; the limit is 300. Shorten it or split it.` Ticking keeps the
+newest 50 done items and drops older ones; open items are never dropped.
 
 ## Agents
 
 `todo {action: 'add', text, owner} | {action: 'done', id} | {action: 'list'}` belongs to @ultimate: it is deferred
-and named in `agents/ultimate.md`, and any other caller is refused. A coordinator that wants something on the list
-asks @ultimate.
+and named in `agents/ultimate.md`, and any other caller is refused; its `text` parameter names the 300-character
+limit. A coordinator that wants something on the list asks @ultimate.
 
 Whenever the open list changed since @ultimate last heard it, the input that starts its next run goes in after a
 `todos.note` entry listing its open to-dos and the user's, by id (`No to-dos are open.` once the last one is ticked).

@@ -56,8 +56,10 @@ export type CallTree = CallRow & { children: CallTree[] }
 export interface TraceQuery {
   trace?: string
   conversation?: number
-  /** ISO time; only calls that started after it. */
+  /** ISO time; only calls that started after the millisecond it names. */
   since?: string
+  /** ISO time; only calls that started before the millisecond it names, so a reader walks the log backwards by passing the oldest `at` it has. */
+  until?: string
   /** The newest calls, at most 1000; default 100. */
   limit?: number
 }
@@ -422,8 +424,15 @@ CREATE INDEX IF NOT EXISTS calls_at ON calls (at);`)
     reader: {
       /** The newest matching calls, oldest first. */
       query(query: TraceQuery = {}): CallRow[] {
-        const since = query.since === undefined ? undefined : Date.parse(query.since)
-        if (Number.isNaN(since)) throw new Error(`Invalid since: ${query.since}`)
+        const time = (name: 'since' | 'until') => {
+          const iso = query[name]
+          if (iso === undefined) return undefined
+          const at = Date.parse(iso)
+          if (Number.isNaN(at)) throw new Error(`Invalid ${name}: ${iso}`)
+          return at
+        }
+        const since = time('since')
+        const until = time('until')
         const filters = [
           ['trace', query.trace],
           ['conversation', query.conversation],
@@ -431,7 +440,10 @@ CREATE INDEX IF NOT EXISTS calls_at ON calls (at);`)
         const where = filters.flatMap(([column, value]) =>
           value === undefined ? [] : [{ sql: `${column} = ?`, value }],
         )
-        if (since !== undefined) where.push({ sql: 'at > ?', value: since })
+        // `at` carries a fraction of a millisecond, but a row shows and is filtered by the millisecond: a bound a
+        // caller read from a row neither repeats that row (`since`) nor skips the rows underneath it (`until`).
+        if (since !== undefined) where.push({ sql: 'at >= ?', value: since + 1 })
+        if (until !== undefined) where.push({ sql: 'at < ?', value: until })
         const limit = Math.min(Math.max(1, Math.trunc(Number(query.limit) || 100)), 1000)
         return select(
           where.length ? 'WHERE ' + where.map((filter) => filter.sql).join(' AND ') : '',
