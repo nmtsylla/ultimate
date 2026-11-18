@@ -152,6 +152,28 @@ and the e2e suite three. `test/setup.ts` gives the tests the same Chromium sandb
 without inheriting the live supervisor's other `ULTIMATE_*` variables.
 **If it is lost:** suites OOM, and browser tests fail on a machine whose kernel blocks user namespaces.
 
+### The lander reports a check that ran out of its budget as a kill
+
+**Files:** `extensions/workspaces/lander.ts`, `extensions/workspaces/checks.ts`, `extensions/workspaces/log.tsx`, `extensions/activity/feed.tsx`
+**Tests:** `extensions/workspaces/test/lander-checks.test.ts`, `extensions/activity/test/web/activity.test.ts`, `extensions/workspaces/test/e2e/workspaces-integration.test.ts`
+**Why:** a check killed at its timeout budget is reported as over budget, naming which budget (`stall` or `total`) and
+how long its rerun took, never as a failing test guessed from the cut-off output; the budget still kills, the check
+reruns once, and failing twice still rejects the landing. `CheckRan` gained an `over budget` result (amber in the
+activity feed) and the landing record carries `overBudget` as structured data; check memos moved to `check-run:` keys so
+a memo written before that change cannot count as a passing run.
+**If it is lost:** a budget kill reads as a flaky test and sends a branch looking for a regression that does not exist.
+
+### Remote machines in the projects rail (upstream PR #165)
+
+**Files:** `extensions/projects/links.ts`, `extensions/projects/refs.ts`, `extensions/projects/server.ts`, `extensions/projects/web.tsx`, `lib/remote.ts`
+**Tests:** `extensions/projects/test/projects.test.ts`, `extensions/projects/test/links.test.ts`, `extensions/codemode/test/codemode-projects.test.ts`
+**Docs:** `extensions/projects/README.md`
+**Why:** upstream PR #165 (after #163) lists the machines in the user's `remotes` in the projects rail: a configured URL
+is a link, an unreachable machine says it is unavailable instead of showing zero counts, and only user settings feed
+it. The one local adaptation is exporting the existing `userConfiguredRemotes`. When upstream merges the PR, take
+upstream's version and drop this entry.
+**If it is lost:** the rail stops showing other machines, and the rail's and codemode's tests for them fail.
+
 ### A trusted source copy carries no real project automations
 
 **Files:** `test/helpers.ts`
