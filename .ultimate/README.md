@@ -6,9 +6,9 @@ work, and changes its own code while you talk to it.
 Every built-in is already on; this setup adds how the repository is landed and reviewed:
 
 - `settings.json`: each worktree isolate installs its dependencies, and the lander runs `pnpm check`, then
-  `pnpm test` and `pnpm test:e2e` in parallel, and pushes to `origin`.
-- `agents/reviewer-*.md`: the review team (correctness, simplicity, architecture), each on its own model; the shipped
-  `reviewer` starts them in parallel and returns one merged verdict.
+  `pnpm test` and `pnpm test:e2e` in sequence with budgets for this host, and pushes to `origin`.
+- `agents/reviewer-*.md`: the review team (correctness, simplicity, architecture), correctness on the `review` family
+  and the other two on `fast`; the shipped `reviewer` starts them in parallel and returns one merged verdict.
 
 To adopt parts of this setup in another project, ask its @ultimate for a tour (the `adopt-ultimate-setup` skill);
 onboarding offers it too.

@@ -445,7 +445,18 @@ it('keeps listing and supervising scripts after a reload bumps the ledger versio
   await until(async () => !!(await get()).script!.exitedAt)
   expect(await get()).toMatchObject({ enabled: false, script: { state: 'stopped' } })
   await writeRun(folder(sub.id), 'echo FIRE after')
-  await call(app, 'resume', sub.id)
+  // A facet reload is asynchronous: a resume that arrives while the replacing facet is still closing answers
+  // "Automation supervisor is closing" (the close test below pins that), and the relaunch at the next open is what
+  // starts the script. Wait for the reload to be over rather than depending on its timing.
+  await until(async () => {
+    try {
+      await call(app, 'resume', sub.id)
+      return true
+    } catch (error) {
+      if (String(error).includes('supervisor is closing')) return false
+      throw error
+    }
+  })
   await until(async () => (await get()).fires === 1)
 })
 
