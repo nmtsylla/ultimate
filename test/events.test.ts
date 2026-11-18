@@ -195,7 +195,7 @@ it('reads recent events newest first as copies, feeds the browser and records no
     (await host.eventLog.recent({ events: [NoticeEvent] })).map((event) => event.data),
   ).toEqual([{ extension: 'probe', message: 'Probe broke', level: 'warning' }])
   // A transient operation notice still reaches the event feed and toast, but does not stay in Diagnostics.
-  expect(probe.server.extensions.info.diagnostics()).not.toContain('Probe broke')
+  expect(await probe.server.extensions.info.diagnostics()).not.toContain('Probe broke')
 })
 
 it('records a notice raised during facet setup, before storage opens, once it opens', async () => {
