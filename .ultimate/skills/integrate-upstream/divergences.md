@@ -41,9 +41,9 @@ routine work on the fast one. New lineage branches are armed automatically unles
 
 ### Fork CLI lifecycle: background start, list, stop, foreground
 
-**Files:** `bin/ultimate.ts`, `lib/lock.ts`
+**Files:** `bin/ultimate.ts`, `lib/lock.ts`, `package.json`
 **Tests:** `test/lock.test.ts`, `test/e2e/project.test.ts`
-**Docs:** `README.md`, `docs/running.md`, `package.json` (whose start script passes the foreground flag)
+**Docs:** `README.md`, `docs/running.md`
 **Why:** plain `ultimate [dir]` starts a project's supervisor in the background and returns; `ultimate list` shows the
 running folders with their local and current Tailscale URLs; `ultimate stop [dir]` stops one; `--foreground` keeps the
 dashboard in the terminal, which is what `pnpm start` and the systemd/launchd service use. `lockHeld` in `lib/lock.ts`
@@ -53,7 +53,7 @@ instance from the CLI.
 
 ### Notice split: diagnostics versus transient toasts
 
-**Files:** `server/extensions.ts`
+**Files:** `server/extensions.ts`, `extensions/fast/server.ts`, `extensions/automations/supervisor.ts`, `extensions/conversations/summary.ts`, `extensions/conversations/summary-model.ts`, `extensions/tailscale/server.ts`
 **Tests:** `test/server.test.ts`, `test/events.test.ts`
 **Docs:** `docs/extensions/server.md` (notice), `docs/extensions/introspection.md` where notices are described
 **Why:** `notice(message, { diagnostic?, untilSecretSet? })` keeps a notice in the Extensions panel only when it names a
@@ -151,13 +151,15 @@ and the e2e suite three. `test/setup.ts` gives the tests the same Chromium sandb
 without inheriting the live supervisor's other `ULTIMATE_*` variables.
 **If it is lost:** suites OOM, and browser tests fail on a machine whose kernel blocks user namespaces.
 
-### `.nvmrc` pinning Node 26
+### A trusted source copy carries no real project automations
 
-**Files:** `.nvmrc`
-**Tests:** none
-**Why:** the server runs `.ts` files directly and needs Node 26 (`node:sqlite`, `import.meta.main`); a shell that picks
-an older Node fails on the first import.
-**If it is lost:** another checkout starts on Node 22 and the server will not boot.
+**Files:** `test/helpers.ts`
+**Tests:** `test/source-copy.test.ts`
+**Why:** `sourceCopy` copies the checkout for a test server with the project's own `.ultimate/automations` left out:
+with them, the sync-upstream watcher ran inside every trusted source copy and raced lineage and model assertions. Tests
+that need an automation create their own fixture.
+**If it is lost:** the fork's real automation runs inside every source copy, and one test's automation races another's
+assertions.
 
 ## C. This project's own configuration
 
@@ -165,7 +167,7 @@ an older Node fails on the first import.
 
 **Files:** `.ultimate/settings.json`
 **Tests:** none
-**Docs:** `docs/worktrees.md` (the lander runs its checks in sequence here)
+**Docs:** `docs/worktrees.md` (the lander runs its checks in sequence here), `.ultimate/README.md`
 **Why:** the model families (`lead` on this account's strong model, `review`, `fast`), `voice-live` disabled,
 `isolates.worktree.setup` installing dependencies, and the lander's checks in sequence with budgets that fit this host
 (`pnpm check` 120 s, `pnpm test` 300 s, `pnpm test:e2e` 300 s) pushing to `origin`. Upstream's file configures its own
@@ -185,6 +187,15 @@ the worker's report names the command behind every claim. The `skills: []` allow
 **If it is lost:** review runs as one generic reviewer again, and agents start loading skills that overwrite their
 contracts.
 
+### `.nvmrc` pinning Node 26
+
+**Files:** `.nvmrc`
+**Tests:** none
+**Why:** this setup's convenience beside `package.json`'s `engines.node`: the server runs `.ts` files directly and needs
+Node 26 (`node:sqlite`, `import.meta.main`), so a checkout opened in a shell that picks an older Node fails on the first
+import.
+**If it is lost:** another checkout starts on Node 22 and the server will not boot.
+
 ### The upstream sync automation
 
 **Files:** `.ultimate/automations/sync-upstream/run`, `.ultimate/automations/sync-upstream/automation.json`
@@ -196,8 +207,8 @@ when the lockfile moves, pushes `origin`, wakes @ultimate only when the range ne
 
 ## D. History that must not come back
 
-**Mission Control** was its own extension, `extensions/mission-control/` (a surface, a fleet action, a test), added in
-#2400 and removed in `d22b236b` together with the `status` fields it had added (`url`, `setup`, `goal`), its `setup` and
-`goal` API additions and its `mission-control` settings key. Upstream never had it. A merge must not resurrect the
-folder, the key or those fields; the `extensions/status` differences that remain against upstream are leftovers of the
-removal (one README sentence and a mock parameter in its test).
+**Mission Control** was its own extension, `extensions/mission-control/` (a surface, a fleet action, a test), built in
+conversation 2400 (commits `d06736a6`..`22974dc3`) and removed in `d22b236b` together with the `status` fields it had
+added (`url`, `setup`, `goal`), its `setup` and `goal` API additions and its `mission-control` settings key. Upstream
+never had it. A merge must not resurrect the folder, the key or those fields; the `extensions/status` differences that
+remain against upstream are leftovers of the removal (one README sentence and a mock parameter in its test).

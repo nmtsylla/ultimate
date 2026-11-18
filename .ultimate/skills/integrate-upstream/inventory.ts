@@ -44,7 +44,7 @@ type Divergence = {
 
 const quoted = (line: string) => [...line.matchAll(/`([^`]+)`/g)].map((match) => match[1] ?? '')
 
-export function parseDivergences(text: string): Divergence[] {
+function parseDivergences(text: string): Divergence[] {
   const entries: Divergence[] = []
   let section = ''
   for (const raw of text.split('\n')) {
@@ -145,20 +145,24 @@ for (const entry of touched) {
   for (const test of entry.tests) commands.add(testCommand(test))
 }
 
-if (incoming.includes('pnpm-lock.yaml'))
+const lockfile = incoming.includes('pnpm-lock.yaml')
+if (lockfile)
   console.log('\nThe lockfile moved: run "pnpm install --frozen-lockfile" before the checks.')
-const unit = incoming.some((path) => path === 'scripts/setup-machine.ts' || path.startsWith('bin/'))
-const restart =
-  unit ||
-  incoming.some((path) =>
-    ['server/', 'shared/', 'lib/', 'bin/'].some((dir) => path.startsWith(dir)),
-  )
-if (restart)
+
+const unit = incoming.includes('scripts/setup-machine.ts')
+const supervisor = incoming.some((path) => path.startsWith('bin/'))
+const restart = incoming.some((path) =>
+  ['server/', 'shared/', 'patches/'].some((dir) => path.startsWith(dir)),
+)
+if (unit)
   console.log(
-    unit
-      ? '\nThe landing needs a host restart, and the unit changed: pnpm setup:machine (daemon-reload and a real service restart), not the restart tool.'
-      : '\nThe landing needs a host restart after it lands.',
+    '\nThe unit may have changed: after the landing run "pnpm setup:machine" and a real service restart; the restart tool cannot apply a unit change.',
   )
+else if (supervisor)
+  console.log(
+    '\nbin/ changed: only a real stop and start applies the supervisor; the restart tool does not.',
+  )
+else if (restart || lockfile) console.log('\nThe landing needs a host restart after it lands.')
 
 console.log(
   '\nChecks, in this order and one heavy suite at a time (this host runs short of memory):',

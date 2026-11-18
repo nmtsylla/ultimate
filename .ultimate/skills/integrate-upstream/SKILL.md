@@ -83,8 +83,9 @@ In this order, alone, never two suites at once and never beside a lander run:
 4. `pnpm test:e2e`
 
 A failure in a test the range did not touch, that passes alone, is host load, not a regression: prove it on the base
-commit in a separate worktree (`git worktree add /tmp/base <base-sha>`, run that one test there), fix wall-clock waits
-at their cause, and report it. Never retry until green, raise a test's timeout or skip it.
+commit in a worktree of it (`git worktree add /tmp/base <base-sha>`, then `pnpm install --frozen-lockfile` there — a
+fresh worktree has no `node_modules` — and run that one test; [docs/worktrees.md](../../../docs/worktrees.md)), fix
+wall-clock waits at their cause, and report it. Never retry until green, raise a test's timeout or skip it.
 
 ## 8. Preview and feature proof
 
@@ -102,16 +103,21 @@ does differently from the fork.
 
 ## 10. After the landing
 
-A card that says `needs restart` gets the `restart` tool for `server/`, `shared/` or packages, per
-[docs/running.md](../../../docs/running.md).
+A card that says `needs restart` gets the `restart` tool when the range changed `server/`, `shared/`, `patches/` or the
+packages, per [docs/running.md](../../../docs/running.md); the landing card decides, this is the expectation.
 
-When the range changed the **unit** — `scripts/setup-machine.ts`, `bin/` arguments or environment, the service files —
-a restart swaps the process but cannot apply the change: run `pnpm setup:machine` on the host clone. It writes the
-units, runs `systemctl --user daemon-reload`, enables and restarts the ones it replaced, and answers
-`restart ultimate yourself` for the unit the command is running inside. That real service restart
-(`systemctl --user restart ultimate`; on macOS `launchctl kickstart -k gui/$(id -u)/com.ultimate.app`) ends every
-conversation on the host, so it is the last step of the work, or @ultimate's or the user's to do — never a surprise in
-the middle of a turn. A landing concludes the branch, so when the range changed the unit, the report says plainly that
-the host still needs `pnpm setup:machine` and a real service restart. Then verify it took: the supervisor is healthy, no
-extension reports a load error, and one read shows the new unit (`systemctl --user show ultimate -p ExecStart`, or
-`ultimate list` printing a folder).
+Two changes the restart tool cannot apply:
+
+- **`bin/`** is the supervisor, which outlives the swap: only a real stop and start (`pnpm start`, or the service)
+  applies it.
+- **The unit** — `scripts/setup-machine.ts`, the service files: run `pnpm setup:machine` on the host clone. It writes
+  the units, runs `systemctl --user daemon-reload`, `enable --now` for every unit, restarts each unit it replaced, and
+  for the one it is running inside it refuses and says `ultimate.service changed: restart ultimate.service yourself.`
+  (on macOS, `com.ultimate.app changed: restart it yourself.`).
+
+That real service restart (`systemctl --user restart ultimate`; on macOS
+`launchctl kickstart -k gui/$(id -u)/com.ultimate.app`) ends every conversation on the host, so it is the last step of
+the work, or @ultimate's or the user's to do — never a surprise in the middle of a turn. A landing concludes the
+branch, so when the range changed the unit, the report says plainly that the host still needs `pnpm setup:machine` and
+a real service restart. Then verify it took: the supervisor is healthy, no extension reports a load error, and one read
+shows the new unit (`systemctl --user show ultimate -p ExecStart`, or `ultimate list` printing a folder).
