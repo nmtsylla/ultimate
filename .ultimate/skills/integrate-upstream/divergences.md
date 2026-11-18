@@ -100,8 +100,9 @@ back.
 
 **Files:** `extensions/workspaces/workspaces.ts`
 **Tests:** `extensions/workspaces/test/e2e/workspaces-integration.test.ts`
-**Why:** releasing a workspace whose recorded source directory no longer exists is skipped instead of throwing, so one
-deleted folder cannot keep the workspaces surface from releasing the rest.
+**Why:** releasing a workspace whose recorded source directory no longer exists is skipped instead of throwing, and a
+workspace whose target branch is gone counts nothing as unlanded, so one deleted folder or branch cannot keep the
+workspaces surface from releasing the rest.
 **If it is lost:** a stale workspace makes release fail on every later attempt.
 
 ### The trace's older bound (`until`)
@@ -176,10 +177,11 @@ memory, and the families point at models this account has no login for.
 
 **Files:** `.ultimate/agents/reviewer.md`, `.ultimate/agents/reviewer-correctness.md`, `.ultimate/agents/reviewer-simplicity.md`, `.ultimate/agents/reviewer-architecture.md`, `agents/coordinator.md`, `agents/worker.md`
 **Tests:** none
-**Why:** a `reviewer` lead starts the three reviewers, each `resident: false`, `thinking: high`, on the `review` family,
-with `skills: []` so they load no skill; the coordinator hands subagents sources rather than retellings, and the worker's
-report names the command behind every claim. The `skills: []` allow-lists in `agents/dream-pass.md`, `agents/reviewer.md`,
-`agents/scout.md` and `agents/watcher.md` are upstream's now — check they survive a merge.
+**Why:** a `reviewer` lead (`addTools: []`, `thinking: high`, `resident: false`) starts the three reviewers: correctness
+on the `review` family, simplicity and architecture on `fast` (architecture at `thinking: low` and advisory), each with
+`skills: []` so none loads a skill over its contract. The coordinator hands subagents sources rather than retellings, and
+the worker's report names the command behind every claim. The `skills: []` allow-lists in `agents/dream-pass.md`,
+`agents/reviewer.md`, `agents/scout.md` and `agents/watcher.md` are upstream's now — check they survive a merge.
 **If it is lost:** review runs as one generic reviewer again, and agents start loading skills that overwrite their
 contracts.
 
