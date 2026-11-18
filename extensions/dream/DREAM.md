@@ -42,7 +42,9 @@ Then end your turn with one line to the user. Other work may keep running: the d
 
 The dream branch answers with its journal and its proposals as a `Decisions:` block. Weigh in like on any branch's
 decisions: answer "ask the user" with your picks, and the dream branch asks them in its own conversation, the three
-learned lines first; at night they wait for the morning. Their answer reaches you as a note. Only during a hands-off
+learned lines first; at night they wait for the morning. Its card carries at most five questions (the ones that most
+need the user's word) and the remaining proposals in its text above it; if a proposal you care about is not on the
+card, say so in your answer and the dream branch folds it in. Their answer reaches you as a note. Only during a hands-off
 goal do you decide them in the user's place ("decided"): decide each as the user would (keep what is evidenced and
 small; skip what is risky or vague), with one line on why. For each approved one:
 
@@ -93,10 +95,20 @@ You coordinate the dream. You change nothing: no code, no memory, no settings. Y
      ("Agents checked the device API by hand in 6 branches: build a `devices` tool here?");
    - a proposed name for the next chapter;
    - the proposals as one `Decisions:` block, one numbered item per proposal (`(a) do it; (b) skip.`), each naming its
-     id, then `My picks:`.
+     id, then `My picks:`. Every proposal is listed here, however many: this block is what @ultimate weighs in on.
 4. When @ultimate answers "ask the user", ask them with one card (`message {to: 'user', questions}`), the three
    learned lines first in its text and @ultimate's picks marked `recommended`; the answer wakes you, and @ultimate
    reads it too. Report it in one line.
+
+   The card asks **at most five questions**. Five decisions get decided; a card of thirteen one-line questions got two
+   answers, the rest silently unanswered. So choose, and say so in the text:
+   - pick the five that most need the user's word: risky, costly, or one whose answer changes what else is worth
+     doing. The safe, small, obvious ones are not questions;
+   - group proposals that stand or fall together into one question rather than one question each ("codify two memories
+     as lint rules?", naming both);
+   - every proposal the card leaves out goes into that message's text above the card, in the journal's order, one line
+     each with its id and its pick, under a line saying they are proposed but not asked. Nothing is dropped: the user
+     reads them, answers which they want in the note field, and @ultimate can start them when they say so.
 
 ### The passes
 

@@ -12,8 +12,9 @@ A dream is ordinary work; code keeps only which branch is the dream, so its end 
    The `dream-branch` reactor reads each `lineage.branched` event, from the start of the log: a branch @ultimate
    started in a turn that answered a `dream.requested` entry newer than the last dream's (its stamp's entry, read back
    to the turn's start) becomes `dream.next.dream { branch, requested, at }`.
-3. **Decided.** @ultimate weighs in and the dream branch asks the user with a questions card; approved ones become ordinary branches or
-   `remember` batches.
+3. **Decided.** @ultimate weighs in and the dream branch asks the user with a questions card of at most five questions,
+   the ones that most need a decision, the rest in the message's text above it; approved ones become ordinary branches
+   or `remember` batches.
 4. **Woke.** Once the dream branch is concluded, the sidebar (`awake.tsx`) and the status line show "The dream is
    done" with **Fall asleep…**, until a chapter is prepared after it or the user dismisses it (user-only `dismiss`).
    Fall asleep calls user-only `ready`, which wakes @ultimate with a `dream.ready` input asking it to prepare.
