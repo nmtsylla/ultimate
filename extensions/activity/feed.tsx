@@ -51,9 +51,9 @@ export function tone(event: EventRecord): 'error' | 'warning' | 'quiet' | undefi
   if (CheckRan.is(event))
     return event.data.result === 'passed'
       ? 'quiet'
-      : event.data.result === 'flaky'
-        ? 'warning'
-        : 'error'
+      : event.data.result === 'failed' || event.data.result === 'timeout'
+        ? 'error'
+        : 'warning'
   if (OptionalBackupEvent.is(event))
     return event.data.phase === 'failed'
       ? 'error'
@@ -245,7 +245,7 @@ function Notice({ event, now }: Props<typeof NoticeEvent>) {
 function Check({ event, now }: Props<typeof CheckRan>) {
   const { command, result, ms } = event.data
   const conversation = event.context?.conversationId
-  const error = result !== 'flaky'
+  const error = tone(event) === 'error'
   return (
     <Row
       event={event}
