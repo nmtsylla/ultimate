@@ -99,7 +99,8 @@ back.
 ### A worktree whose source directory is gone
 
 **Files:** `extensions/workspaces/workspaces.ts`
-**Tests:** `extensions/workspaces/test/e2e/workspaces-integration.test.ts`
+**Tests:** none — neither branch has a test, so prove both by hand after a merge: delete a workspace's target branch and
+its `pending` work reports `unlanded: 0`; remove a child's source directory and `release` still releases the batch.
 **Why:** releasing a workspace whose recorded source directory no longer exists is skipped instead of throwing, and a
 workspace whose target branch is gone counts nothing as unlanded, so one deleted folder or branch cannot keep the
 workspaces surface from releasing the rest.
@@ -208,7 +209,7 @@ when the lockfile moves, pushes `origin`, wakes @ultimate only when the range ne
 ## D. History that must not come back
 
 **Mission Control** was its own extension, `extensions/mission-control/` (a surface, a fleet action, a test), built in
-conversation 2400 (commits `d06736a6`..`22974dc3`) and removed in `d22b236b` together with the `status` fields it had
+conversation 2400 (commits `01136fe4`..`22974dc3`) and removed in `d22b236b` together with the `status` fields it had
 added (`url`, `setup`, `goal`), its `setup` and `goal` API additions and its `mission-control` settings key. Upstream
 never had it. A merge must not resurrect the folder, the key or those fields; the `extensions/status` differences that
 remain against upstream are leftovers of the removal (one README sentence and a mock parameter in its test).

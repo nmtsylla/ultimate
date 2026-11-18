@@ -53,7 +53,8 @@ function parseDivergences(text: string): Divergence[] {
     else if (line.startsWith('### '))
       entries.push({ section, title: line.slice(4).trim(), files: [], tests: [], docs: [] })
     else if (line.startsWith('**Files:**')) entries.at(-1)?.files.push(...quoted(line))
-    else if (line.startsWith('**Tests:**')) entries.at(-1)?.tests.push(...quoted(line))
+    else if (line.startsWith('**Tests:**'))
+      entries.at(-1)?.tests.push(...quoted(line).filter((test) => test.includes('/')))
     else if (line.startsWith('**Docs:**')) entries.at(-1)?.docs.push(...quoted(line))
   }
   return entries
