@@ -30,6 +30,8 @@ interrupted). Calls never remove their own marks, since one can land as a call e
 calls no longer running, and a cancel of a call that is not running fails.
 
 Pi's `prepare` hook only changes the command, cwd, and environment, not the timeout, so one wrapper injects the
-default and formats execution timeout errors.
+default and formats execution timeout errors. A second wrapper names the hunk of a multi-hunk `edit` that did not
+match: Pi reports `edits[1]` by index alone, so the error adds that hunk's first line and says nothing was written,
+and the caller retries one hunk instead of rewriting the call.
 
 `server.ts` installs Pi Durable's read, write, edit, and bash tools (named `coding-tools`, like this folder). `web.tsx` registers one renderer per tool name under `tools`; `diff.tsx` turns the edit tool's `details.patch` (or Pi's display `details.diff`) into rows.

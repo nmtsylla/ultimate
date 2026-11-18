@@ -1,8 +1,8 @@
-import { mkdtemp, rm, writeFile } from 'node:fs/promises'
+import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { crc32, deflateSync } from 'node:zlib'
-import { createBashTool } from '@earendil-works/pi-durable/tools'
+import { createBashTool, createEditTool } from '@earendil-works/pi-durable/tools'
 import { NodeExecutionEnv } from '@earendil-works/pi-durable/env/node'
 import type { ToolExecutionApi } from '@earendil-works/pi-durable'
 import { afterEach, expect, it, vi } from 'vitest'
@@ -81,6 +81,38 @@ it('reads an image past the 2000 px limit shrunk to fit, keeping its aspect rati
     expect(result.diagnostics?.[0].message).toContain(
       'Resized from 3000x30 to 2000x20. Multiply coordinates by 1.50',
     )
+  } finally {
+    await rm(dir, { recursive: true, force: true })
+  }
+})
+
+it('names the hunk of a multi-hunk edit that did not match, and writes nothing', async () => {
+  const dir = await mkdtemp(join(tmpdir(), 'ultimate-edit-'))
+  try {
+    const file = join(dir, 'notes.ts')
+    await writeFile(file, 'const a = 1\nconst b = 2\n')
+    const wrapper = codingTools({
+      emit: vi.fn<ExtensionHost['emit']>() as ExtensionHost['emit'],
+    }).wraps!.find((wrap) => 'tool' in wrap && wrap.tool === 'edit')!
+    if (!('tool' in wrapper)) throw new Error('Missing edit wrapper')
+    const edit = wrapper.wrap(createEditTool())
+    const api = { env: new NodeExecutionEnv({ cwd: dir }) } as unknown as ToolExecutionApi
+    const call = edit.execute(
+      {
+        path: 'notes.ts',
+        edits: [
+          { oldText: 'const a = 1', newText: 'const a = 3' },
+          { oldText: 'const c = 9\nconst d = 10', newText: 'const c = 11' },
+        ],
+      },
+      api,
+      context,
+    )
+    // The index alone is already Pi's; the hunk's first line says which one to retry.
+    await expect(call).rejects.toThrow(
+      'Hunk edits[1] starts with "const c = 9"; nothing was written.',
+    )
+    expect(await readFile(file, 'utf8')).toBe('const a = 1\nconst b = 2\n')
   } finally {
     await rm(dir, { recursive: true, force: true })
   }

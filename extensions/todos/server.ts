@@ -21,10 +21,10 @@ import { Standing } from '../subagents/api.ts'
 import { TodosApi } from './api.ts'
 import { AddAction, DoneAction, ReopenAction, TodosDoc } from './refs.ts'
 import type { Todo } from './refs.ts'
+import { TODO_TEXT_CHARS, tooLongText } from './text.ts'
 
 /** Done to-dos kept; older ones are dropped when another is ticked. */
 export const DONE_LIMIT = 50
-const TEXT_CHARS = 300
 /** Idempotency keys kept; adding past this forgets the oldest, and its key then adds a new to-do. */
 export const KEY_LIMIT = 500
 const KEY_CHARS = 200
@@ -84,8 +84,7 @@ export async function add(tx: Tx, text: unknown, owner: unknown, key?: unknown):
     return todo
   }
   if (typeof text !== 'string' || !text.trim()) throw new Error('text must be nonempty')
-  if (text.trim().length > TEXT_CHARS)
-    throw new Error(`text must be at most ${TEXT_CHARS} characters`)
+  if (text.trim().length > TODO_TEXT_CHARS) throw new Error(tooLongText(text.trim().length))
   if (!OWNERS.includes(owner as Todo['owner']))
     throw new Error("owner must be 'user' or 'ultimate'")
   const todos = await tx.doc(Todos, ROOT_CONVERSATION_ID)
@@ -210,7 +209,11 @@ export default function todosExtension(host: ExtensionHost) {
           "The project's to-dos, owned by you ('ultimate') or the user ('user'): add {text, owner}, done {id}, list. Keep open loops here, not in codemode store; the user sees and ticks them in the To-dos panel, and their open questions already show there, so never add a to-do for a question. Other projects read this list with ultimate.doc('todos', 1, {project}) and ask you to add through ultimate.tell.",
         parameters: obj({
           action: strEnum(['add', 'done', 'list']),
-          text: opt(str()),
+          text: opt(
+            str({
+              description: `add: the to-do, a short line of at most ${TODO_TEXT_CHARS} characters.`,
+            }),
+          ),
           owner: opt(strEnum(['user', 'ultimate'])),
           id: opt(int({ minimum: 1 })),
         }),

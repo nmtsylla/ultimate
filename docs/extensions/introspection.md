@@ -38,8 +38,9 @@ into the extensions that handle credentials, `secrets` (secret values) and `mode
 answering a login), keep neither, nor an error message, only the error's class. A new extension whose actions or
 services take or return credentials joins `SEALED` in `server/trace.ts`. Rows go to `<home>/trace.sqlite` in batches outside Pi commits, while
 the harness is open only; retention keeps 7 days and at most 200,000 rows. A trace failure is logged once and never
-fails the call. Read with `host.trace.query({ trace?, conversation?, since?, limit })` (the newest `limit`, oldest
-first), `host.trace.page({ before?, after?, since?, until?, kinds?, conversation?, errors?, text?, limit })` (calls by write
+fails the call. Read with `host.trace.query({ trace?, conversation?, since?, until?, limit })` (the newest `limit`,
+oldest first; `since` and `until` are exclusive ISO bounds on the millisecond a call's `at` shows, so `until` walks the
+log backwards without repeating a row), `host.trace.page({ before?, after?, since?, until?, kinds?, conversation?, errors?, text?, limit })` (calls by write
 position `seq`, which is finish order, for paging; the `system` extension's stream uses it),
 `host.trace.tree(traceId)` (calls nested under `children`) and `host.trace.polls()`, or codemode's
 `ultimate.trace(...)` and `ultimate.traceTree(traceId)`. The `system` extension merges the trace and the event log

@@ -38,8 +38,13 @@ it('adds to-dos by owner and refuses empty text or an unknown owner', async () =
   })
   expect(await add(tx, 'Rotate the key', 'user')).toMatchObject({ id: 2, owner: 'user' })
   await expect(add(tx, ' ', 'user')).rejects.toThrow('nonempty')
+  // A long one is refused with its own length, so the caller knows how far over it is.
+  await expect(add(tx, 'x'.repeat(301), 'user')).rejects.toThrow(
+    'The to-do is 301 characters; the limit is 300. Shorten it or split it.',
+  )
+  expect(await add(tx, 'x'.repeat(300), 'user')).toMatchObject({ id: 3 })
   await expect(add(tx, 'x', 'lander')).rejects.toThrow('owner')
-  expect((await list(tx)).map((todo) => todo.id)).toEqual([1, 2])
+  expect((await list(tx)).map((todo) => todo.id)).toEqual([1, 2, 3])
 })
 
 it('adds through TodosApi once per key, even after the to-do left the list', async () => {

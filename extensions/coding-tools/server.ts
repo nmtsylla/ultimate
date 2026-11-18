@@ -43,6 +43,28 @@ function defaultBashTimeout() {
 const bashTripwireMessage = (seconds: number) =>
   `Tripwire: bash ran past the ${seconds} s default limit and was stopped. Pass timeout for longer commands.`
 
+/** The line a hunk starts with, trimmed and cut, for the error that names it. */
+const hunkStart = (oldText: string) => {
+  const line = (oldText.split('\n')[0] ?? '').trim()
+  const shown = line.length > 120 ? `${line.slice(0, 120)}…` : line
+  return shown ? `"${shown}"` : 'an empty line'
+}
+
+/**
+ * Name the hunk Pi's edit tool could not match: it reports `edits[1]` by index alone, and a caller re-sends the whole
+ * call where retrying that one hunk would do. The call was atomic, so the error can say nothing was written.
+ */
+const nameFailingHunk = (error: unknown, edits: readonly { oldText: string }[]) => {
+  if (!(error instanceof Error)) return error
+  const index = /edits\[(\d+)\]/.exec(error.message)?.[1]
+  const hunk = index === undefined ? undefined : edits[Number(index)]
+  if (!hunk) return error
+  return new Error(
+    `${error.message} Hunk edits[${index}] starts with ${hunkStart(hunk.oldText)}; nothing was written.`,
+    { cause: error },
+  )
+}
+
 /**
  * Process-local Git hooks for one bash call. Each appends tab-separated lines (kind, sha, branch, worktree, git common
  * dir, extra) to `$ULTIMATE_COMMIT_LOG` and swallows every failure, so it can never fail a commit; the trailing `#`
@@ -336,6 +358,16 @@ export default function codingTools(host: Pick<ExtensionHost, 'emit'>) {
       bashTool,
     ] as ToolRegistration[],
     wraps: [
+      wrapTool(createEditTool(), (edit) => ({
+        ...edit,
+        async execute(args, api, context) {
+          try {
+            return await edit.execute(args, api, context)
+          } catch (error) {
+            throw nameFailingHunk(error, args.edits)
+          }
+        },
+      })),
       wrapTool(createBashTool(), (bash) => ({
         ...bash,
         async execute(args, api, context) {
