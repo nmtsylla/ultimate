@@ -6,9 +6,9 @@
 // The pagehide is raised with the document alive, so what is tested is the card's flush, not the browser's delivery of
 // it. That is deliberate and leaves a question open: an answer sent as a real document unloads can be lost, because
 // Chromium sometimes never opens a connection for such a request — about one app-shaped run in six on a loaded host,
-// while a bare page doing the same kept 36 of 36 (#21848's probe, /tmp/probe-22970, is the instrument for that). A test
-// of the loss itself would flake here and cost every landing about 35 s until the card keeps a pending answer across
-// loads and sends it on the next one; that is the fix, not a real-navigation test.
+// while a bare page doing the same kept every one of 36. A test of the loss itself would flake here and cost every
+// landing about 35 s; `test/e2e/pending-answer.test.ts` proves the guarantee instead, by unloading with the send made
+// to fail and landing the answer on the next load.
 import { join, resolve } from 'node:path'
 import { fauxAssistantMessage, fauxToolCall } from '@earendil-works/pi-ai/providers/faux'
 import type { FauxResponseFactory } from '@earendil-works/pi-ai/providers/faux'
