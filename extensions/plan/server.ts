@@ -1,3 +1,5 @@
+import { parseConversationId, offsetEntryId } from '../../lib/ids.ts'
+import type { ConversationId, Cursor, EntryId, JsonObject, Tx } from '@earendil-works/pi-durable'
 import { randomUUID } from 'node:crypto'
 import { arr, int, obj, opt, str } from '@earendil-works/pi-schema'
 import { strEnum } from '../../lib/schema.ts'
@@ -10,10 +12,14 @@ import {
   ROOT_CONVERSATION_ID,
   section,
 } from '@earendil-works/pi-durable'
-import type { ConversationId, Cursor, EntryId, JsonObject, Tx } from '@earendil-works/pi-durable'
 import type { ExtensionHost } from '../../server/extensions.ts'
 import { Branch } from '../lineage/api.ts'
-import { PlanDoc, TaskIndexDoc } from './refs.ts'
+import { SubmissionLanded } from '../workspaces/api.ts'
+import { PlanApi } from './api.ts'
+import { confirmed, criteriaCounts, criteriaOfBody, currentEpic, raise } from './progress.ts'
+import { PlanDoc, ProgressDoc, TaskIndexDoc } from './refs.ts'
+import type { EpicProgress, Estimate } from './refs.ts'
+import { safeToRerun } from '../../lib/replay.ts'
 
 export type Task = {
   key: string
@@ -22,7 +28,7 @@ export type Task = {
   description: string
   deps: string[]
   status: 'backlog' | 'todo' | 'in_progress' | 'in_review' | 'done' | 'blocked' | 'canceled'
-  child?: number
+  child?: ConversationId
   verdict?: string
   notes: { at: string; text: string }[]
 }
@@ -32,6 +38,8 @@ export type Epic = {
   body: string
   status: 'planning' | 'in_progress' | 'done' | 'blocked'
   verdict?: string
+  met?: number[]
+  revision?: number
   tasks: Record<string, Task>
 }
 export const Plan = defineDoc<{ next: number; epics: Record<string, Epic> }>({
@@ -43,7 +51,6 @@ export const Plan = defineDoc<{ next: number; epics: Record<string, Epic> }>({
   fork: 'asOf',
   initial: () => ({ next: 1, epics: {} }),
 })
-/** The task each linked child conversation works on, across every coordinator's plan; kept with the root. */
 export type TaskLink = {
   coordinator: number
   epic: string
@@ -60,18 +67,25 @@ export const TaskIndex = defineDoc<{ children: Record<string, TaskLink> }>({
   fork: 'initial',
   initial: () => ({ children: {} }),
 })
-export const docs = [Plan, TaskIndex]
-// Commit the receipt with the edit, closing the crash window before api.memo stores the result.
-const Receipt = defineDoc<{ results: Record<string, string> }>({
+export const Progress = defineDoc<{ epics: Record<string, EpicProgress> }>({
+  kind: ProgressDoc.kind,
+  checkpointWhen: () => false,
+  version: 1,
+  scope: 'conversation',
+  history: 'latest',
+  fork: 'initial',
+  initial: () => ({ epics: {} }),
+})
+export const docs = [Plan, TaskIndex, Progress]
+const AtomicEditReceipt = defineDoc<{ results: Record<string, string> }>({
   kind: 'ultimate.plan.receipt',
   checkpointWhen: () => false,
   version: 1,
   scope: 'task',
   initial: () => ({ results: {} }),
 })
-// structuredContent hands codemode scripts the object itself. As text, `shown.description` was undefined, and
-// `update {description: shown.description + more}` wrote "undefined" over the description (#159728).
-const reply = (text: string) => ({
+const ORDERED_EMPTY_SECTION = ''
+const structuredReply = (text: string) => ({
   output: [{ type: 'text' as const, text }],
   structuredContent: JSON.parse(text) as JsonObject,
 })
@@ -80,11 +94,7 @@ const required = (value: string | undefined, field: string) => {
   return value
 }
 
-/**
- * Rewrite the index entries of `coordinator` from its plan. A link that is new or whose task title changed renames
- * the child after its task.
- */
-async function reindex(
+async function indexAndNameChildren(
   tx: Tx,
   host: Pick<ExtensionHost, 'metadata'>,
   coordinator: ConversationId,
@@ -110,13 +120,12 @@ async function reindex(
         before?.coordinator !== coordinator ||
         before.key !== task.key ||
         before.title !== task.title
-      if (renamed && (await tx.conversation(task.child as ConversationId)))
-        (await tx.doc(host.metadata, task.child as ConversationId)).title = task.title
+      if (renamed && (await tx.conversation(task.child)))
+        (await tx.doc(host.metadata, task.child)).title = task.title
     }
   }
 }
 
-/** Set by a conversation's first run; a fork starts without it. */
 export const Started = defineDoc<{ started?: true }>({
   kind: 'plan.started',
   checkpointWhen: () => false,
@@ -127,12 +136,11 @@ export const Started = defineDoc<{ started?: true }>({
   initial: () => ({}),
 })
 
-/** Whether branch `id` has answered since it forked at entry `at`. */
-async function answered(tx: Tx, id: ConversationId, at: number) {
+async function answeredSinceFork(tx: Tx, id: ConversationId, at: EntryId) {
   let cursor: Cursor | undefined
   do {
     const page = await tx.scanEntries(
-      { conversationId: id, minEntryId: (at + 1) as EntryId, order: 'ascending' },
+      { conversationId: id, minEntryId: offsetEntryId(at, 1), order: 'ascending' },
       64,
       cursor,
     )
@@ -142,28 +150,95 @@ async function answered(tx: Tx, id: ConversationId, at: number) {
   return false
 }
 
+async function raiseEstimates(
+  tx: Tx,
+  id: ConversationId,
+  epic: { key: string; body: string },
+  estimates: Record<string, Estimate>,
+) {
+  const progress = await tx.doc(Progress, id)
+  const entry = progress.epics[epic.key]
+  progress.epics[epic.key] = {
+    ...entry,
+    estimates: raise(criteriaOfBody(epic.body) ?? [], entry?.estimates ?? {}, estimates),
+  }
+}
+
+function keepConfirmations(before: string[], after: string[], met: number[]) {
+  const kept = met.map((n) => before[n - 1])
+  return after.flatMap((criterion, index) => {
+    const match = kept.indexOf(criterion)
+    if (match < 0) return []
+    kept.splice(match, 1)
+    return [index + 1]
+  })
+}
+
 export default (host: ExtensionHost) => {
+  host.implement(PlanApi, {
+    openCriteria: async (id, caller) => {
+      const plan = await host.harness().snapshot(Plan, id, caller)
+      const epic = plan && currentEpic(plan.epics)
+      if (!epic || epic.status === 'done') return undefined
+      const progress = (await host.harness().snapshot(Progress, id, caller))?.epics[epic.key]
+      const estimates = progress?.estimates ?? {}
+      const criteria = (criteriaOfBody(epic.body) ?? []).flatMap((text, index) =>
+        confirmed(epic, index + 1)
+          ? []
+          : [
+              {
+                n: index + 1,
+                text,
+                ...(Object.hasOwn(estimates, text) ? { estimate: estimates[text].state } : {}),
+              },
+            ],
+      )
+      return criteria.length
+        ? { epic: epic.key, revision: epic.revision ?? 0, criteria }
+        : undefined
+    },
+    estimate: async (tx, id, key, revision, estimates) => {
+      const epic = (await tx.doc(Plan, id)).epics[key]
+      if (epic && revision === (epic.revision ?? 0)) await raiseEstimates(tx, id, epic, estimates)
+    },
+  })
+  host.react(
+    'criteria-at-landing',
+    [SubmissionLanded],
+    async (tx, { data }) => {
+      const id = data.conversationId
+      if (!(await tx.conversation(id))) return
+      const epic = currentEpic((await tx.doc(Plan, id)).epics)
+      if (!epic) return
+      const progress = await tx.doc(Progress, id)
+      const entry = progress.epics[epic.key]
+      const counts = criteriaCounts(epic, entry?.estimates)
+      if (counts.total > 0)
+        progress.epics[epic.key] = {
+          ...entry,
+          landed: { ...entry?.landed, [data.submission]: counts },
+        }
+    },
+    { from: 'now' },
+  )
   return defineExtension({
     name: 'plan',
     hooks: [
       // Pi upstream: @earendil-works/pi-durable@1.5.2 — patched transactional beforeInput hook.
-      // A lineage branch starts with an empty plan, not the one it forked with: emptied in the commit that places its
-      // first input, so its first request never sees the inherited plan. A branch that answered before it was marked
-      // started (one made before this hook) keeps its own.
       hook(GenerationTask, {
         beforeInput: async (_input, { tx, conversationId }) => {
           if ((await tx.doc(Started, conversationId)).started) return undefined
           const branch = (await tx.doc(Branch, conversationId)).branch
-          const reset = !!branch && !(await answered(tx, conversationId, branch.at))
+          const unusedForkPlan =
+            !!branch && !(await answeredSinceFork(tx, conversationId, branch.at))
           ;(await tx.doc(Started, conversationId)).started = true
-          if (reset) Object.assign(await tx.doc(Plan, conversationId), Plan.definition.initial())
+          if (unusedForkPlan)
+            Object.assign(await tx.doc(Plan, conversationId), Plan.definition.initial())
           return undefined
         },
       }),
     ],
     sections: [
-      // Empty, not undefined, without open epics: the slot keeps its place, so coming back patches only this section
-      // (Pi re-sends every section when one would land out of order, #573861).
       section(
         'plan',
         async ({ read, conversationId }, context) => {
@@ -179,7 +254,7 @@ export default (host: ExtensionHost) => {
                   (task.child !== undefined ? ` child:${task.child}` : ''),
               ),
             ])
-          return lines.length ? `<plan>\n${lines.join('\n')}\n</plan>` : ''
+          return lines.length ? `<plan>\n${lines.join('\n')}\n</plan>` : ORDERED_EMPTY_SECTION
         },
         { tag: false },
       ),
@@ -188,9 +263,10 @@ export default (host: ExtensionHost) => {
       defineTool({
         name: 'plan',
         description:
-          'Maintain the durable epic/task ledger. The tool assigns keys: epics E1, E2; tasks E1.1, E1.2. Use only keys a call has returned: wait for create/add results before calls that reference them (epic, deps, key), never in the same parallel batch. create {title,body}; add {epic,title,role,description,deps?}; update {key,status?,title?,description?,body?,child?,verdict?} replaces only the fields given (description and body whole: show first to extend them); in codemode every action returns the object; note {key,text} notes a task only (E1.1, not E1; record on an epic with update verdict or body); show {key?} reads an epic, task, or the whole ledger. Epic bodies use Request, Selected approach, Intent, Scope (in/out), binary Acceptance criteria, Implementation, Verification, Risks. Task descriptions use Outcome, Scope, Non-goals, Files, Acceptance criteria with a verification command, Constraints. Epic statuses: planning, in_progress, done, blocked. Task statuses: backlog, todo, in_progress, in_review, done, blocked, canceled. child links a conversation number; deps are task keys. body is epic-only; verdict records evidence on either an epic or a task. Children read the root coordinator’s ledger with show; only that coordinator can edit it. Read full plans with show; the prompt contains only a compact ledger.',
-        // A memoized receipt id records the result in the same transaction as the ledger change.
-        replay: 'safe',
+          'Maintain the durable epic/task ledger. The tool assigns keys: epics E1, E2; tasks E1.1, E1.2. Use only keys a call has returned: wait for create/add results before calls that reference them (epic, deps, key), never in the same parallel batch. create {title,body}; add {epic,title,role,description,deps?}; update {key,status?,title?,description?,body?,child?,verdict?,met?} replaces only the fields given (description, body and met whole: show first to extend them); in codemode every action returns the object; note {key,text} notes a task only (E1.1, not E1; record on an epic with update verdict or body); show {key?} reads an epic, task, or the whole ledger. Epic bodies use Request, Selected approach, Intent, Scope (in/out), binary Acceptance criteria, Implementation, Verification, Risks. Task descriptions use Outcome, Scope, Non-goals, Files, Acceptance criteria with a verification command, Constraints. Epic statuses: planning, in_progress, done, blocked. Task statuses: backlog, todo, in_progress, in_review, done, blocked, canceled. child links a conversation number; deps are task keys. body is epic-only; verdict records evidence on either an epic or a task; met lists the numbers of the epic acceptance criteria you verified. Children read the root coordinator’s ledger with show; only that coordinator can edit it. Read full plans with show; the prompt contains only a compact ledger.',
+        ...safeToRerun(
+          'A memoized receipt id records the result in the same transaction as the ledger change.',
+        ),
         parameters: obj({
           action: strEnum(['create', 'add', 'update', 'note', 'show'] as const),
           title: opt(str()),
@@ -211,10 +287,16 @@ export default (host: ExtensionHost) => {
           status: opt(str()),
           child: opt(int({ minimum: 1 })),
           verdict: opt(str()),
+          met: opt(
+            arr(int({ minimum: 1 }), {
+              description:
+                'Epic only: the numbers of the acceptance criteria you verified, all of them each time.',
+            }),
+          ),
           text: opt(str()),
         }),
         execute: async (args, api, context) => {
-          const cached = await api.memo<ReturnType<typeof reply>>('result', context)
+          const cached = await api.memo<ReturnType<typeof structuredReply>>('result', context)
           if (cached) return cached
           const receiptId = await api.memo('receipt-id', randomUUID(), context)
           const text = await api.commit(async (tx) => {
@@ -228,7 +310,7 @@ export default (host: ExtensionHost) => {
               throw new Error(
                 `Only conversation ${coordinator} edits this plan; report to it instead`,
               )
-            const receipt = await tx.doc(Receipt, api.taskId)
+            const receipt = await tx.doc(AtomicEditReceipt, api.taskId)
             if (receipt.results[receiptId] !== undefined) return receipt.results[receiptId]
             const plan = await tx.doc(Plan, coordinator)
             const lookup = (key: string) => {
@@ -295,23 +377,42 @@ export default (host: ExtensionHost) => {
                 if (task && args.body !== undefined) throw new Error('body requires an epic key')
                 if (!task && (args.description !== undefined || args.child !== undefined))
                   throw new Error('description and child require a task key')
+                if (task && args.met !== undefined) throw new Error('met requires an epic key')
+                if (!task && args.met !== undefined) {
+                  const total = criteriaOfBody(args.body ?? item.body)?.length ?? 0
+                  const outside = args.met.find((n) => n > total)
+                  if (outside !== undefined)
+                    throw new Error(`${item.key} has ${total} acceptance criteria, not ${outside}`)
+                }
+                if (!task && args.body !== undefined) {
+                  const before = criteriaOfBody(item.body) ?? []
+                  const after = criteriaOfBody(args.body) ?? []
+                  if (before.join('\n') !== after.join('\n')) {
+                    if (args.met === undefined && item.met)
+                      item.met = keepConfirmations(before, after, item.met)
+                    item.revision = (item.revision ?? 0) + 1
+                    await raiseEstimates(tx, coordinator, { ...item, body: args.body }, {})
+                  }
+                }
+                if (!task && args.met !== undefined)
+                  item.met = [...new Set(args.met)].toSorted((a, b) => a - b)
                 if (args.status !== undefined) item.status = args.status as typeof item.status
                 if (args.title !== undefined) item.title = args.title
                 if (args.verdict !== undefined) item.verdict = args.verdict
                 if (task) {
                   if (args.description !== undefined) item.description = args.description
-                  if (args.child !== undefined) item.child = args.child
+                  if (args.child !== undefined) item.child = parseConversationId(args.child)
                 } else {
                   if (args.body !== undefined) item.body = args.body
                 }
               }
               result = item
             }
-            if (args.action !== 'show') await reindex(tx, host, coordinator, plan)
+            if (args.action !== 'show') await indexAndNameChildren(tx, host, coordinator, plan)
             receipt.results[receiptId] = JSON.stringify(result)
             return receipt.results[receiptId]
           }, context)
-          return api.memo('result', reply(text), context)
+          return api.memo('result', structuredReply(text), context)
         },
       }),
     ].map((tool) => ({ ...tool, outputSchema: { type: 'object' } })),

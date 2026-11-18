@@ -1,6 +1,5 @@
-// The project switcher (`shell.rail`): every Ultimate running on this machine as a colour swatch at the window's left edge.
-// Hover opens it over the app with names, repositories and ports; pin keeps it open beside the app. A row is a link to that
-// instance's `/`, which opens its @ultimate. It steps aside for any other extension that fills `shell.rail`.
+import { debounce, deadline, every } from '../../lib/timers.ts'
+import type { Cancel } from '../../lib/timers.ts'
 import { PinIcon, PinOffIcon } from 'lucide-react'
 import { useEffect, useRef, useState, useSyncExternalStore } from 'react'
 import { Skeleton } from '@/components/ui/skeleton'
@@ -9,6 +8,7 @@ import {
   cn,
   defineWebExtension,
   prettyName,
+  keepLast,
   useAction,
   useExtensions,
   useViewport,
@@ -20,32 +20,30 @@ import type { RunningProject } from './refs.ts'
 
 const RAIL = 56
 const WIDE = 272
-/** Live state every 4 s while the page is visible; the shared pin every 30 s. */
-const LIVE = 4_000
-const PIN = 30_000
+const VISIBLE_PROJECTS_POLL_MS = 4_000
+const SHARED_PIN_POLL_MS = 30_000
+const NAVIGATION_EXPIRY_MS = 15_000
+const pixelAlignedAxis = 'relative flex h-full w-5 justify-center'
+const titleBarAlignedHeader = 'flex h-9 shrink-0 items-center border-b border-border/70'
+const statusLineAlignedFooter =
+  'flex h-7 shrink-0 items-center border-t border-border/70 font-mono text-[10px] text-muted-foreground/70 md:pointer-coarse:box-content md:pointer-coarse:pb-3'
 
-/**
- * The project this tab is navigating to. The old page stays until the new one paints, which takes seconds while the
- * target builds its bundle, so the rail marks the target and a bar runs along the top. A page restored by Back from the
- * browser's cache clears it, and so does a navigation stopped on this page, after 15 s.
- */
-let opening: string | undefined
-let expiry: ReturnType<typeof setTimeout> | undefined
+let pendingNavigation: string | undefined
+let cancelNavigationExpiry: Cancel | undefined
 const listeners = new Set<() => void>()
 const setOpening = (url: string | undefined) => {
-  opening = url
-  clearTimeout(expiry)
-  if (url) expiry = setTimeout(() => setOpening(undefined), 15_000)
+  pendingNavigation = url
+  cancelNavigationExpiry?.()
+  if (url) cancelNavigationExpiry = deadline(NAVIGATION_EXPIRY_MS, () => setOpening(undefined))
   for (const listener of listeners) listener()
 }
 const subscribe = (listener: () => void) => {
   listeners.add(listener)
   return () => listeners.delete(listener)
 }
-const useOpening = () => useSyncExternalStore(subscribe, () => opening)
+const useOpening = () => useSyncExternalStore(subscribe, () => pendingNavigation)
 if (typeof window !== 'undefined') window.addEventListener('pageshow', () => setOpening(undefined))
 
-/** A thin brand bar across the top of the window while this tab navigates to another project. */
 function OpeningBar() {
   if (!useOpening()) return null
   return (
@@ -56,28 +54,25 @@ function OpeningBar() {
   )
 }
 
-/** Calls `refetch` every `every` ms while the page is visible, and when it becomes visible; never while `off`. */
-function usePoll(refetch: () => Promise<unknown>, every: number, off = false) {
+function useVisiblePoll(refetch: () => Promise<unknown>, interval: number, off = false) {
   useEffect(() => {
     if (off) return undefined
     const visible = () => {
       if (document.visibilityState !== 'visible') return
-      // oxlint-disable-next-line typescript/no-floating-promises -- useAction reports failures and resolves undefined rather than rejecting.
       void refetch()
     }
-    const timer = setInterval(visible, every)
+    const stopPolling = every(interval, visible)
     document.addEventListener('visibilitychange', visible)
     return () => {
-      clearInterval(timer)
+      stopPolling()
       document.removeEventListener('visibilitychange', visible)
     }
-  }, [refetch, every, off])
+  }, [refetch, interval, off])
 }
 
-/** Whether the rail is pinned: one value for every instance on this machine, so a jump keeps the rail as it was. */
-function usePinned(off: boolean) {
-  const shared = useAction(PinAction, {}, { onError: () => {}, enabled: !off })
-  usePoll(shared.refetch, PIN, off)
+function useSharedPin(off: boolean) {
+  const shared = useAction(PinAction, {}, { onError: keepLast, enabled: !off })
+  useVisiblePoll(shared.refetch, SHARED_PIN_POLL_MS, off)
   const [pinned, setPinned] = useState<boolean>()
   const stored = shared.data?.pinned
   useEffect(() => {
@@ -85,13 +80,11 @@ function usePinned(off: boolean) {
   }, [stored])
   const set = (next: boolean) => {
     setPinned(next)
-    // A failed write leaves this page's value; the next poll brings the file's back.
-    api.action(PinAction, { pinned: next }).catch(() => {})
+    api.action(PinAction, { pinned: next }).catch(keepLast)
   }
   return [pinned ?? false, set] as const
 }
 
-/** The project's identity under its name: its GitHub repository when known, and its port. */
 function Detail({ project, pending }: { project: RunningProject; pending: boolean }) {
   if (pending) return <span className="text-brand">opening…</span>
   return (
@@ -102,7 +95,6 @@ function Detail({ project, pending }: { project: RunningProject; pending: boolea
   )
 }
 
-/** What waits in a project, loudest first: questions for the user in amber, else a pulsing dot while it works. */
 function State({ busy, questions }: { busy: boolean; questions: number }) {
   if (questions > 0)
     return (
@@ -114,10 +106,6 @@ function State({ busy, questions }: { busy: boolean; questions: number }) {
   return null
 }
 
-/**
- * One project. Collapsed it is its swatch, a segment of the rail's colour column: a family's segments (`first`,
- * `last`) join into one strip, rounded at its ends, with a gap before the next family.
- */
 function Row({
   project,
   wide,
@@ -129,7 +117,6 @@ function Row({
   wide: boolean
   first: boolean
   last: boolean
-  /** Every running project's folder name, for the shades of a family. */
   family: readonly string[]
 }) {
   const here = project.current
@@ -164,8 +151,7 @@ function Row({
       data-project={project.name}
       href={href}
       onClick={(event) => {
-        // A plain click navigates this tab: mark it. Mod-click and middle-click open another tab and leave this one.
-        if (
+        const skipsTabNavigation =
           here ||
           unreachable ||
           event.button !== 0 ||
@@ -173,13 +159,11 @@ function Row({
           event.ctrlKey ||
           event.shiftKey ||
           event.altKey
-        )
-          return
+        if (skipsTabNavigation) return
         setOpening(project.url)
       }}
       title={title}
     >
-      {/* The edge bar: the project this tab shows, or the one it is opening; a hint of it on hover. */}
       <span
         className={cn(
           'absolute -left-1.5 w-[3px] rounded-r-full transition-all duration-150',
@@ -187,8 +171,6 @@ function Row({
           pending && 'animate-pulse-dot',
         )}
       />
-      {/* The swatch's own box: the indicators centre on it with auto margins, never a transform, so they land on whole
-          pixels on the column's axis. A family's inner segments leave a hairline above and below. */}
       <span
         className={cn(
           'flex h-full w-11 shrink-0 justify-center',
@@ -196,12 +178,11 @@ function Row({
           !last && 'pb-px',
         )}
       >
-        <span className="relative flex h-full w-5 justify-center">
+        <span className={pixelAlignedAxis}>
           <ProjectSwatch
             className={cn(
               'h-full transition-[width,opacity] duration-150',
               here || pending ? 'w-5' : 'w-3 opacity-70 group-hover:w-4 group-hover:opacity-100',
-              // The project this tab shows: a ring set off from its swatch, clear on a purple one too.
               here && 'outline-1 outline-offset-2 outline-foreground/45',
               first ? 'rounded-t-md' : 'rounded-t-[1px]',
               last ? 'rounded-b-md' : 'rounded-b-[1px]',
@@ -242,7 +223,6 @@ function Row({
   )
 }
 
-/** The rail's shape while the list loads, so it holds its place and width. */
 function RailSkeleton({ wide }: { wide: boolean }) {
   return (
     <div aria-hidden className="pointer-events-none">
@@ -265,22 +245,22 @@ function RailSkeleton({ wide }: { wide: boolean }) {
 
 function Rail() {
   const viewport = useViewport()
-  // Another extension's rail (a fleet switcher, say) takes the slot: two rails side by side would be one too many.
-  const other = useExtensions().some(
+  const railOccupied = useExtensions().some(
     (record) => record.name !== 'projects' && record.extension?.slots?.['shell.rail'],
   )
-  const list = useAction(ListAction, null, { onError: () => {}, enabled: !other })
-  usePoll(list.refetch, LIVE, other)
+  const list = useAction(ListAction, null, {
+    onError: keepLast,
+    enabled: !railOccupied,
+  })
+  useVisiblePoll(list.refetch, VISIBLE_PROJECTS_POLL_MS, railOccupied)
   const [hover, setHover] = useState(false)
-  const [pinned, setPinned] = usePinned(other)
-  const timer = useRef<ReturnType<typeof setTimeout>>(undefined)
-  useEffect(() => () => clearTimeout(timer.current), [])
+  const [pinned, setPinned] = useSharedPin(railOccupied)
+  const [showHover] = useState(() => debounce(150, () => setHover(true)))
+  useEffect(() => showHover.cancel, [showHover])
   const projects = list.data ?? []
   const loading = !list.data && !list.error
-  // A list that arrives after the skeleton fades in over it; one already there on mount just shows.
-  const waited = useRef(loading).current
-  // On phones, like the shell's other rails; and with only this project running there is nothing to switch to.
-  if (other || viewport === 'phone' || (!loading && projects.length < 2)) return null
+  const loadedAfterMount = useRef(loading).current
+  if (railOccupied || viewport === 'phone' || (!loading && projects.length < 2)) return null
 
   const wide = hover || pinned
   const family = projects.map((project) => project.name)
@@ -295,23 +275,18 @@ function Rail() {
           'absolute inset-y-0 left-0 z-40 flex flex-col overflow-hidden border-r border-sidebar-border bg-sidebar text-sidebar-foreground transition-[width,box-shadow] duration-150 ease-out',
           hover && !pinned && 'shadow-2xl shadow-black/40',
         )}
-        onMouseEnter={() => {
-          clearTimeout(timer.current)
-          timer.current = setTimeout(() => setHover(true), 150)
-        }}
+        onMouseEnter={showHover}
         onMouseLeave={() => {
-          clearTimeout(timer.current)
+          showHover.cancel()
           setHover(false)
         }}
-        // Keyboard: tabbing into the rail opens it like hovering, leaving it closes it.
         onFocus={() => setHover(true)}
         onBlur={(event) => {
           if (!event.currentTarget.contains(event.relatedTarget)) setHover(false)
         }}
         style={{ width: wide ? WIDE : RAIL }}
       >
-        {/* Every horizontal rail line continues an app line: this one the title bar's (h-9, core shell). */}
-        <div className="flex h-9 shrink-0 items-center border-b border-border/70">
+        <div className={titleBarAlignedHeader}>
           <span className="flex w-14 shrink-0 justify-center font-mono text-[9px] tracking-[0.2em] text-brand">
             U
           </span>
@@ -339,7 +314,7 @@ function Rail() {
         </div>
         <div className="min-h-0 flex-1 overflow-x-hidden overflow-y-auto pt-2 pb-2 [scrollbar-width:none]">
           {loading && <RailSkeleton wide={wide} />}
-          <div className={cn('flex flex-col', waited && 'animate-fade-in')}>
+          <div className={cn('flex flex-col', loadedAfterMount && 'animate-fade-in')}>
             {projects.map((project, index) => {
               const stem = stemOf(project.name)
               const first = index === 0 || stemOf(projects[index - 1].name) !== stem
@@ -352,8 +327,7 @@ function Rail() {
             })}
           </div>
         </div>
-        {/* Same height and border as the status line beside it (core primitives.tsx), so the two read as one line. */}
-        <div className="flex h-7 shrink-0 items-center border-t border-border/70 font-mono text-[10px] text-muted-foreground/70 md:pointer-coarse:box-content md:pointer-coarse:pb-3">
+        <div className={statusLineAlignedFooter}>
           <span className="flex w-14 shrink-0 justify-center">
             {questions > 0 && <span className="size-1.5 rounded-full bg-amber-400" />}
           </span>

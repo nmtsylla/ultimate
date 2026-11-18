@@ -1,3 +1,4 @@
+import type { ConversationId } from '@earendil-works/pi-durable'
 import { cn } from 'cn'
 import {
   ArrowUpRightIcon,
@@ -10,20 +11,27 @@ import { useEffect, useState } from 'react'
 import type { ReactNode } from 'react'
 import { MentionText } from '@/components/ai/message'
 import { Button } from '@/components/ui/button'
-import { api, definePoint, Fold, Provided, useConversationSummary, useUltimate } from '@/sdk'
+import {
+  AllProvided,
+  api,
+  definePoint,
+  Fold,
+  Provided,
+  useConversationSummary,
+  useUltimate,
+} from '@/sdk'
 import { FeatureTag, useStandingName } from '../conversations/ui.tsx'
 import { GithubAction, RepoAction } from './refs.ts'
 import type { GithubRepo } from './refs.ts'
 import type { ConversationSubject } from '../conversations/types.ts'
 
-/** "open #id", with a dot while that conversation works. */
 export function Open({
   id,
   className,
   label,
   entry,
 }: {
-  id: number
+  id: ConversationId
   className?: string
   label?: string
   entry?: number
@@ -49,18 +57,13 @@ export function Open({
   )
 }
 
-let repo: Promise<string | null> | undefined
-/** The project's `github.com/<owner>/<repo>`, or null off GitHub; asked once per page. */
+let githubRepoOncePerPage: Promise<string | null> | undefined
 export function useGithubRepo() {
   const [url, setUrl] = useState<string | null>()
   useEffect(() => {
-    repo ??= api.action(GithubAction).catch(
-      // No repository: landings show their count without a link.
-      () => null,
-    )
+    githubRepoOncePerPage ??= api.action(GithubAction).catch(() => null)
     let live = true
-    // oxlint-disable-next-line typescript/no-floating-promises -- repo converts action failures to null; the callback only updates state.
-    void repo.then((value) => live && setUrl(value))
+    void githubRepoOncePerPage.then((value) => live && setUrl(value))
     return () => {
       live = false
     }
@@ -68,18 +71,13 @@ export function useGithubRepo() {
   return url
 }
 
-let project: Promise<GithubRepo | null> | undefined
-/** The project's GitHub repository with its visibility, or null off GitHub; asked once per page. */
+let projectRepoOncePerPage: Promise<GithubRepo | null> | undefined
 export function useProjectRepo() {
   const [value, setValue] = useState<GithubRepo | null>()
   useEffect(() => {
-    project ??= api.action(RepoAction).catch(
-      // No repository: the sidebar's project header names no remote.
-      () => null,
-    )
+    projectRepoOncePerPage ??= api.action(RepoAction).catch(() => null)
     let live = true
-    // oxlint-disable-next-line typescript/no-floating-promises -- project converts action failures to null; the callback only updates state.
-    void project.then((found) => live && setValue(found))
+    void projectRepoOncePerPage.then((found) => live && setValue(found))
     return () => {
       live = false
     }
@@ -87,11 +85,14 @@ export function useProjectRepo() {
   return value
 }
 
-/**
- * Opens a review of a spec (`<base>...<sha>`, `branch:<name>`) in the app, or undefined while nothing reviews
- * (`review` provides it).
- */
 export const Review = definePoint<string, (() => void) | undefined>('workspaces.review')
+
+export const LandedNote = definePoint<
+  { conversation: ConversationId; submission: string },
+  ReactNode | undefined
+>('workspaces.landed-note')
+
+export const LandingExtras = definePoint<ConversationId, ReactNode>('workspaces.landing-extras')
 
 const external = (href: string, children: ReactNode, className?: string) => (
   <a
@@ -109,10 +110,6 @@ const external = (href: string, children: ReactNode, className?: string) => (
   </a>
 )
 
-/**
- * "3 commits": opens a review of `range` (`<base>...<sha>`) while something reviews, with the DiffsHub compare `href`
- * as a small ↗ beside it; otherwise the count links to DiffsHub itself.
- */
 export function CommitCount({
   count,
   href,
@@ -154,27 +151,22 @@ export function CommitCount({
   )
 }
 
-/**
- * What a submission lands as the feature its conversation had at submit time; a standing agent is only ever its
- * `@name`, whatever branch work it last submitted.
- */
-function useSubject(from: number, subject?: ConversationSubject) {
+function useStandingOrSubmittedSubject(from: ConversationId, subject?: ConversationSubject) {
   const agent = useStandingName(from)
   return agent ? { title: agent } : subject
 }
 
-/** The feature a submission lands, as one line: its feature tag and title, then `#id`. */
 export function Subject({
   subject: given,
   from,
   className,
 }: {
   subject?: ConversationSubject
-  from: number
+  from: ConversationId
   className?: string
 }) {
   const { switchConversation } = useUltimate()
-  const subject = useSubject(from, given)
+  const subject = useStandingOrSubmittedSubject(from, given)
   return (
     <span className={cn('flex min-w-0 items-center gap-1.5', className)}>
       {subject?.feature && <FeatureTag className="shrink-0" feature={subject.feature} />}
@@ -198,13 +190,8 @@ const tones = {
   failed: ['border-l-error/70', 'text-error', XIcon, 'not landed'],
 } as const
 
-/**
- * A landing as one card: the feature it lands (tag, title, summary) from its conversation's summary at submit time,
- * the outcome's headline, then `children` (commits, flaky checks, steps). The lander's log, the submitter's report and
- * the root's note all show it. In a chat it folds to one line: the outcome, the feature, `sha`.
- */
 export function LandingCard({
-  card,
+  card: foldStateEntry,
   tone,
   headline,
   subject,
@@ -213,27 +200,26 @@ export function LandingCard({
   at,
   divergence,
   sourceEntry,
+  submission,
   children,
 }: {
-  /** The entry that shows it, which keeps its fold state. */
   card: number
   tone: LandingTone
   headline: ReactNode
   subject?: ConversationSubject
-  /** The submitting conversation. */
-  from: number
-  /** The landed commit, for the folded line. */
+  from: ConversationId
   sha?: string
   at?: ReactNode
   divergence?: string
   sourceEntry?: number
+  submission?: string
   children?: ReactNode
 }) {
   const [border, color, Icon, label] = tones[tone]
-  const named = useSubject(from, subject)
+  const named = useStandingOrSubmittedSubject(from, subject)
   return (
     <Fold
-      card={card}
+      card={foldStateEntry}
       summary={
         <>
           <Icon className={cn('size-3 shrink-0', color)} />
@@ -278,6 +264,16 @@ export function LandingCard({
             </p>
           )}
           {children}
+          {submission && tone !== 'failed' && (
+            <Provided input={{ conversation: from, submission }} point={LandedNote}>
+              {(note) => note}
+            </Provided>
+          )}
+          {tone !== 'failed' && (
+            <AllProvided input={from} point={LandingExtras}>
+              {(extras) => extras}
+            </AllProvided>
+          )}
         </div>
       </section>
     </Fold>

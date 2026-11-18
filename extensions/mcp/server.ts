@@ -1,7 +1,3 @@
-/**
- * MCP: connects the servers in `mcpServers` (user settings, and the project's once its setup is trusted) and offers
- * their tools through one `mcp` tool, so the prompt stays the same however many tools the servers have.
- */
 import { basename } from 'node:path'
 import { pathToFileURL } from 'node:url'
 import { map, obj, opt, str, unknown } from '@earendil-works/pi-schema'
@@ -24,6 +20,7 @@ import {
 } from '@earendil-works/pi-mcp/oauth'
 import { implementAction } from '../../lib/actions.ts'
 import { readSecret } from '../../lib/secrets.ts'
+import { retryAfter, type Cancel } from '../../lib/timers.ts'
 import { readSettings, userSettingsPath } from '../../lib/settings.ts'
 import type { ExtensionAction } from '../../server/actions.ts'
 import type { ExtensionHost } from '../../server/extensions.ts'
@@ -37,16 +34,15 @@ import {
 import type { McpServerStatus } from './refs.ts'
 import { beginLogin, forgetCredentials, oauthProvider, storedCredentials } from './oauth.ts'
 import type { LoginFlow } from './oauth.ts'
+import { inProcess, rebuiltOnOpen } from '../../lib/errors.ts'
 
 export const reloadOnSettings = true
 export const pollActions = ['status']
 
-/** A tool call may run long; progress notifications from the server renew it. */
-const CALL_TIMEOUT = 10 * 60_000
+const PROGRESS_RENEWED_CALL_TIMEOUT_MS = 10 * 60_000
 const FIRST_RETRY = 5_000
 const LAST_RETRY = 5 * 60_000
 
-/** One `mcpServers` entry, as Claude Desktop and Cursor write it. */
 type Entry =
   | { command: string; args: string[]; env: Record<string, string>; cwd?: string }
   | { url: string; headers: Record<string, string> }
@@ -56,15 +52,11 @@ type Server = Omit<McpServerStatus, 'tools'> & {
   client?: McpClient
   tools: Tool[]
   attempts: number
-  timer?: ReturnType<typeof setTimeout>
-  /** The connect or reconnect running now; the next one queues behind it. */
-  connecting?: Promise<void>
-  /** The secret values its config resolved, kept out of every error it shows. */
-  secrets: string[]
-  /** The browser sign-in waiting for its redirect, while the user finishes it in the browser. */
+  cancelRetry?: Cancel
+  connectionQueueTail?: Promise<void>
+  resolvedSecretsForRedaction: string[]
   login?: {
     url: string
-    /** Completes it from the address bar of the page the browser failed to load, on another machine. */
     complete(pasted: string): Promise<void>
     close(): Promise<void>
   }
@@ -77,7 +69,6 @@ const strings = (value: unknown) =>
 const record = (value: unknown) =>
   isObject(value) && Object.values(value).every((v) => typeof v === 'string')
 
-/** The entry, or why it cannot be used. */
 function entryOf(value: unknown): Entry | string {
   if (!isObject(value)) return 'must be an object'
   if (typeof value.url === 'string') {
@@ -100,15 +91,10 @@ function entryOf(value: unknown): Entry | string {
 
 const SECRET = /\$\{([A-Z][A-Z0-9_]*)\}/g
 
-/**
- * OAuth applies to an HTTP server that brings no `Authorization` header: an explicit token or service credential keeps
- * winning, and stdio servers never see it.
- */
 const oauthApplies = (entry: Entry) =>
   'url' in entry &&
   !Object.keys(entry.headers).some((name) => name.toLowerCase() === 'authorization')
 
-/** The secrets an entry names with `${NAME}`, in its url, headers, command args and env. */
 const placeholders = (entry: Entry) =>
   ('url' in entry
     ? [entry.url, ...Object.values(entry.headers)]
@@ -123,8 +109,7 @@ class MissingSecret extends Error {
   }
 }
 
-/** `${NAME}` in a value becomes the secret `NAME` from the Secrets panel, taken literally; `found` collects them. */
-async function expand(home: string, value: string, found: string[]) {
+async function expandLiteralSecrets(home: string, value: string, found: string[]) {
   const values = new Map<string, string>()
   for (const [, name] of value.matchAll(SECRET)) {
     const secret = await readSecret(home, name)
@@ -137,18 +122,19 @@ async function expand(home: string, value: string, found: string[]) {
 const expandAll = async (home: string, values: Record<string, string>, found: string[]) =>
   Object.fromEntries(
     await Promise.all(
-      Object.entries(values).map(async ([key, value]) => [key, await expand(home, value, found)]),
+      Object.entries(values).map(async ([key, value]) => [
+        key,
+        await expandLiteralSecrets(home, value, found),
+      ]),
     ),
   ) as Record<string, string>
 
-/** An error's message with the server's secrets masked: HTTP bodies and stderr may echo them. */
 const redact = (server: Server, error: unknown) =>
-  server.secrets.reduce(
+  server.resolvedSecretsForRedaction.reduce(
     (text, secret) => text.replaceAll(secret, '***'),
     error instanceof Error ? error.message : String(error),
   )
 
-/** User servers, then the project's (empty until its setup is trusted); a project entry replaces a user one by name. */
 async function configured(host: ExtensionHost) {
   const layers: [McpServerStatus['source'], JsonObject][] = [
     ['user', await readSettings(userSettingsPath(host.userHome))],
@@ -172,14 +158,13 @@ async function configured(host: ExtensionHost) {
           : { state: 'connecting', entry }),
         tools: [],
         attempts: 0,
-        secrets: [],
+        resolvedSecretsForRedaction: [],
       })
     }
   }
   return servers
 }
 
-/** Every `${NAME}` in the configured servers, declared so the Secrets panel lists it with its Add button. */
 export async function secrets(host: ExtensionHost) {
   const users = new Map<string, Set<string>>()
   for (const server of (await configured(host)).values())
@@ -199,11 +184,10 @@ const listing = (server: Server) =>
         `\n${tool.name}: ${tool.description?.trim() ?? tool.title ?? ''}\n  input: ${JSON.stringify(tool.inputSchema)}`,
     ),
   ].join('\n')
+const renewTimeoutOnProgress = () => {}
 const failure = (text: string) => ({ output: [{ type: 'text' as const, text }], isError: true })
 
-/** What a sign-in did: stored tokens still refreshed, the browser is needed, or it failed and the row says why. */
 type SignIn = 'authorized' | 'waiting' | 'failed'
-
 const views = new WeakMap<
   ExtensionHost,
   {
@@ -259,38 +243,40 @@ export default async function mcp(host: ExtensionHost) {
     server.error = error
     const delay = Math.min(FIRST_RETRY * 2 ** server.attempts++, LAST_RETRY)
     server.retryAt = Date.now() + delay
-    server.timer = setTimeout(() => void begin(server), delay)
-    server.timer.unref?.()
+    server.cancelRetry = retryAfter(
+      delay,
+      () => rebuiltOnOpen('open reconnects every configured MCP server', begin(server)),
+      { unref: true },
+    )
   }
 
   async function connect(server: Server) {
-    clearTimeout(server.timer)
+    server.cancelRetry?.()
     delete server.retryAt
     delete server.error
     delete server.missing
     server.state = 'connecting'
     const entry = server.entry!
     const found: string[] = []
-    server.secrets = found
+    server.resolvedSecretsForRedaction = found
     const client = new McpClient({
       name: 'ultimate',
       version: '1.0.0',
       roots: [{ uri: pathToFileURL(host.projectRoot).href, name: basename(host.projectRoot) }],
     })
     server.client = client
-    // Once connected, a dropped connection fails the server and retries; closing it here does not.
     client.onClose(() => {
-      if (!closed && server.client === client && server.state === 'connected')
-        fail(server, 'Disconnected')
+      const activeConnectionDropped =
+        !closed && server.client === client && server.state === 'connected'
+      if (activeConnectionDropped) fail(server, 'Disconnected')
     })
     let stdio: StdioTransport | undefined
     let oauthUrl: string | undefined
     try {
       let transport: StdioTransport | StreamableHttpTransport
       if ('url' in entry) {
-        const url = await expand(host.userHome, entry.url, found)
+        const url = await expandLiteralSecrets(host.userHome, entry.url, found)
         oauthUrl = oauthApplies(entry) ? url : undefined
-        // Only an OAuth server has credentials to show; a stored file left from another config stays invisible.
         if (oauthUrl) {
           const credentials = await storedCredentials(host.userHome, url)
           server.signedIn = credentials.signedIn
@@ -306,22 +292,26 @@ export default async function mcp(host: ExtensionHost) {
       } else {
         transport = stdio = new StdioTransport({
           command: entry.command,
-          args: await Promise.all(entry.args.map((arg) => expand(host.userHome, arg, found))),
+          args: await Promise.all(
+            entry.args.map((arg) => expandLiteralSecrets(host.userHome, arg, found)),
+          ),
           env: await expandAll(host.userHome, entry.env, found),
           cwd: entry.cwd ?? host.projectRoot,
         })
       }
       await client.connect(transport)
       client.onNotification('notifications/tools/list_changed', () => {
-        client
-          .listTools()
-          .then((tools) => {
-            if (server.client === client) server.tools = tools
-          })
-          // The list stays as it was; the next reconnect reads it again.
-          .catch((error: unknown) =>
-            console.warn(`MCP ${server.name}: tools/list: ${redact(server, error)}`),
-          )
+        rebuiltOnOpen(
+          'open reconnects MCP servers and lists their tools again',
+          client
+            .listTools()
+            .then((tools) => {
+              if (server.client === client) server.tools = tools
+            })
+            .catch((error: unknown) =>
+              console.warn(`MCP ${server.name}: tools/list: ${redact(server, error)}`),
+            ),
+        )
       })
       const tools = await client.listTools()
       if (closed || server.client !== client) return
@@ -329,7 +319,6 @@ export default async function mcp(host: ExtensionHost) {
       server.state = 'connected'
       server.attempts = 0
       if (oauthUrl) {
-        // A refresh during this connect replaces the token, and with it the expiry the popover shows.
         const credentials = await storedCredentials(host.userHome, oauthUrl)
         server.signedIn = credentials.signedIn
         server.expiresAt = credentials.expiresAt
@@ -339,8 +328,6 @@ export default async function mcp(host: ExtensionHost) {
       if (closed || server.client !== client) return
       if (error instanceof MissingSecret) server.missing = error.secret
       const stderr = stdio?.stderr.trim().split('\n').at(-1)
-      // The server wants OAuth credentials this machine has none of, or cannot renew: wait for a sign-in instead of
-      // retrying into the same 401.
       if (
         oauthApplies(entry) &&
         (error instanceof McpOAuthAuthorizationRequiredError ||
@@ -366,32 +353,30 @@ export default async function mcp(host: ExtensionHost) {
     try {
       await client?.close()
     } catch (error) {
-      // Closing is best effort: the transport is gone either way, and the server shows its own state.
       console.warn('MCP close', error instanceof Error ? error.message : error)
     }
   }
 
-  /** Runs `work` after the server's current connect or reconnect, so only one client is ever being set up. */
-  function queue(server: Server, work: () => Promise<void>) {
-    const next = (server.connecting ?? Promise.resolve()).then(work)
-    server.connecting = next
-    // work never rejects (connect and close report into the server's state).
-    // oxlint-disable-next-line typescript/no-floating-promises -- see above.
-    void next.finally(() => {
-      if (server.connecting === next) delete server.connecting
-    })
+  function queueSingleConnection(server: Server, work: () => Promise<void>) {
+    const next = (server.connectionQueueTail ?? Promise.resolve()).then(work)
+    server.connectionQueueTail = next
+    rebuiltOnOpen(
+      'open reconnects every configured MCP server with a fresh connection queue',
+      next.finally(() => {
+        if (server.connectionQueueTail === next) delete server.connectionQueueTail
+      }),
+    )
     return next
   }
 
   function begin(server: Server) {
     if (closed || !server.entry) return Promise.resolve()
-    return server.connecting ?? queue(server, () => connect(server))
+    return server.connectionQueueTail ?? queueSingleConnection(server, () => connect(server))
   }
 
-  /** Drops the server's client and connects again. */
   function restart(server: Server) {
     if (closed || !server.entry) return Promise.resolve()
-    return queue(server, async () => {
+    return queueSingleConnection(server, async () => {
       const previous = server.client
       server.client = undefined
       await close(previous)
@@ -400,16 +385,10 @@ export default async function mcp(host: ExtensionHost) {
     })
   }
 
-  /**
-   * The OAuth credentials of a connect: the transport refreshes a stored token after a 401, and nothing is registered or
-   * opened in a browser here. Without stored credentials it gets none, so a 401 leaves the server waiting for a sign-in
-   * instead of retrying forever.
-   */
   async function authProvider(url: string): Promise<AuthProvider | undefined> {
     const provider = oauthProvider({
       userHome: host.userHome,
       serverUrl: url,
-      // A connect may refresh a token, never authorize: the user signs in from the status line instead.
       onRedirect: () => {
         throw new McpOAuthAuthorizationRequiredError()
       },
@@ -427,8 +406,6 @@ export default async function mcp(host: ExtensionHost) {
       redirectToAuthorization: (target) => provider.redirectToAuthorization(target),
       saveCodeVerifier: (verifier) => provider.saveCodeVerifier(verifier),
       codeVerifier: () => provider.codeVerifier(),
-      // A rejected client would make the flow drop the registration and register again. A connect only ever renews the
-      // token it already has, so the client stays and the server waits for a sign-in.
       invalidateCredentials: (kind) =>
         provider.invalidateCredentials(kind === 'verifier' ? 'verifier' : 'tokens'),
       saveDiscoveryState: (state) => provider.saveDiscoveryState(state),
@@ -436,7 +413,6 @@ export default async function mcp(host: ExtensionHost) {
     })
   }
 
-  /** Ends a sign-in still waiting for its browser redirect. */
   async function cancelLogin(server: Server) {
     const login = server.login
     if (!login) return
@@ -444,32 +420,26 @@ export default async function mcp(host: ExtensionHost) {
     await login.close()
   }
 
-  /**
-   * Starts a browser sign-in and returns once the page to open is known. The redirect, the token exchange and the
-   * connect run on afterwards and report into the server's state: the browser round trip takes as long as the user does.
-   * It never throws; `'authorized'` means stored tokens still refreshed and nothing went to the browser.
-   */
   async function signIn(server: Server): Promise<SignIn> {
     const entry = server.entry
     if (!entry || !('url' in entry)) return 'failed'
-    clearTimeout(server.timer)
+    server.cancelRetry?.()
     delete server.retryAt
     delete server.error
     await cancelLogin(server)
     const found: string[] = []
-    server.secrets = found
+    server.resolvedSecretsForRedaction = found
     let flow: LoginFlow
     try {
       flow = await beginLogin({
         userHome: host.userHome,
-        serverUrl: await expand(host.userHome, entry.url, found),
+        serverUrl: await expandLiteralSecrets(host.userHome, entry.url, found),
       })
     } catch (error) {
       server.state = 'needs-login'
       server.error = `Sign-in failed: ${redact(server, error)}`
       return 'failed'
     }
-    // The extension went away while the flow was discovering: its listener must not outlive it.
     if (closed) {
       await flow.close()
       return 'failed'
@@ -478,18 +448,20 @@ export default async function mcp(host: ExtensionHost) {
     const login = { url: flow.url, complete: flow.complete, close: () => flow.close() }
     server.login = login
     server.state = 'needs-login'
-    void flow.authorized.then(
-      async () => {
-        if (server.login === login) delete server.login
-        if (!closed) await restart(server)
-      },
-      (error: unknown) => {
-        // Signed out or signed in again meanwhile: that ended this wait, and it needs no error of its own.
-        if (server.login !== login) return
-        delete server.login
-        server.state = 'needs-login'
-        server.error = `Sign-in failed: ${redact(server, error)}`
-      },
+    inProcess(
+      'a browser sign-in reports into the server it belongs to, and dies with the extension',
+      flow.authorized.then(
+        async () => {
+          if (server.login === login) delete server.login
+          if (!closed) await restart(server)
+        },
+        (error: unknown) => {
+          if (server.login !== login) return
+          delete server.login
+          server.state = 'needs-login'
+          server.error = `Sign-in failed: ${redact(server, error)}`
+        },
+      ),
     )
     return 'waiting'
   }
@@ -522,12 +494,10 @@ export default async function mcp(host: ExtensionHost) {
         throw new Error(`${name} is a stdio server: sign-in is for HTTP servers`)
       if (!oauthApplies(entry))
         throw new Error(`${name} sends its own Authorization header, so it never uses OAuth`)
-      // Behind a connect, so the flow and a connect never write the stored credentials at the same time.
       const signedIn: { outcome: SignIn } = { outcome: 'failed' }
-      await queue(server, async () => {
+      await queueSingleConnection(server, async () => {
         signedIn.outcome = await signIn(server)
       })
-      // Stored credentials still refreshed, so nothing went to the browser: connect with the token they left.
       if (signedIn.outcome === 'authorized') await restart(server)
     },
     async completeLogin(name, pasted) {
@@ -541,11 +511,9 @@ export default async function mcp(host: ExtensionHost) {
       try {
         await login.complete(pasted)
       } catch (error) {
-        // The flow's own failure is worded already; only a server's secrets are masked from what it says.
         throw new Error(redact(server, error), { cause: error })
       }
-      // The sign-in's own restart follows the same promise: waiting for it brings the row back connected.
-      await server.connecting
+      await server.connectionQueueTail
     },
     async logout(name) {
       const server = servers.get(name)
@@ -553,18 +521,20 @@ export default async function mcp(host: ExtensionHost) {
       const entry = server.entry
       if (!entry || !('url' in entry))
         throw new Error(`${name} is a stdio server: it has no sign-in`)
-      // A sign-in waiting for its browser ends now, before the queue; the queued work then drops the credentials.
       await cancelLogin(server)
       const outcome: { error?: unknown } = {}
-      await queue(server, async () => {
+      await queueSingleConnection(server, async () => {
         try {
           const previous = server.client
           server.client = undefined
           await close(previous)
           const found: string[] = []
-          server.secrets = found
-          await forgetCredentials(host.userHome, await expand(host.userHome, entry.url, found))
-          clearTimeout(server.timer)
+          server.resolvedSecretsForRedaction = found
+          await forgetCredentials(
+            host.userHome,
+            await expandLiteralSecrets(host.userHome, entry.url, found),
+          )
+          server.cancelRetry?.()
           server.tools = []
           server.state = 'needs-login'
           delete server.error
@@ -572,7 +542,6 @@ export default async function mcp(host: ExtensionHost) {
           delete server.signedIn
           delete server.expiresAt
         } catch (error) {
-          // Queue work never rejects, so the caller gets this failure instead of a stuck chain.
           outcome.error = error
         }
       })
@@ -584,13 +553,12 @@ export default async function mcp(host: ExtensionHost) {
   host.onOpen(async () => {
     if (started) return
     started = true
-    // Each server reports its own failure in its state, and connect() never rejects; none waits for another.
-    // oxlint-disable-next-line typescript/no-floating-promises -- see above.
-    for (const server of servers.values()) void begin(server)
+    for (const server of servers.values())
+      rebuiltOnOpen('open reconnects every configured MCP server', begin(server))
   })
   host.onClose(async () => {
     closed = true
-    for (const server of servers.values()) clearTimeout(server.timer)
+    for (const server of servers.values()) server.cancelRetry?.()
     await Promise.all([...servers.values()].map((server) => cancelLogin(server)))
     await Promise.all([...servers.values()].map((server) => close(server.client)))
   })
@@ -619,7 +587,7 @@ export default async function mcp(host: ExtensionHost) {
               const server = servers.get(name)
               if (!server)
                 return failure(`No MCP server named ${name}. Configured: ${names.join(', ')}`)
-              await server.connecting
+              await server.connectionQueueTail
               if (server.state !== 'connected' || !server.client)
                 return failure(
                   server.state === 'needs-login'
@@ -631,22 +599,18 @@ export default async function mcp(host: ExtensionHost) {
               try {
                 const result = await client.callTool(tool, args ?? {}, {
                   signal: context.abortSignal,
-                  timeoutMs: CALL_TIMEOUT,
-                  // Asking for progress lets each notification renew the timeout.
-                  onProgress: () => {},
+                  timeoutMs: PROGRESS_RENEWED_CALL_TIMEOUT_MS,
+                  onProgress: renewTimeoutOnProgress,
                 })
                 return { output: toLlmContent(result), isError: result.isError === true }
               } catch (error) {
-                // A JSON-RPC error, a timeout or a cancel leaves the connection usable. Anything else (an HTTP
-                // failure, an expired session, a closed transport) does: connect again, never resend the call.
-                const broken = !(
+                const brokenConnectionNoResend = !(
                   error instanceof McpError ||
                   error instanceof McpTimeoutError ||
                   error instanceof McpAbortError
                 )
-                // restart never rejects; the server's state shows how it went.
-                // oxlint-disable-next-line typescript/no-floating-promises -- see above.
-                if (broken && server.client === client) void restart(server)
+                if (brokenConnectionNoResend && server.client === client)
+                  rebuiltOnOpen('open reconnects every configured MCP server', restart(server))
                 return failure(`MCP ${name}/${tool} failed: ${redact(server, error)}`)
               }
             },

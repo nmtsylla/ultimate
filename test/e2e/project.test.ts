@@ -7,7 +7,7 @@ import { join } from 'node:path'
 import { setTimeout as delay } from 'node:timers/promises'
 import { afterEach, expect, it } from 'vitest'
 import { ProjectTrustStore } from '@earendil-works/pi-coding-agent'
-import { projectHome } from '../../server/project.ts'
+import { projectHome } from '../../lib/project-paths.ts'
 import { attach, temp, sourceCopy, cleanEnv, until, post as requestPost } from '../helpers.ts'
 import { scriptedModel } from './scripted-model.ts'
 

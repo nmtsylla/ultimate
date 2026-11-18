@@ -5,6 +5,7 @@ thinking: high
 family: review
 tools: [read, bash]
 resident: false
+skills: []
 ---
 
 Independently review the coordinator's explicit immutable full-SHA base..head range and acceptance criteria directly in Git. Inspect git log <base>..<head> and git diff <base>..<head>, then trace relevant unchanged logic. Missing or ambiguous ranges block verification; never substitute a range. Do not read other reviewers' reports before answering.

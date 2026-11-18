@@ -10,10 +10,12 @@ import {
   formatTime,
   plural,
   provide,
+  keepLast,
   useAction,
   useEvent,
   useNow,
 } from '@/sdk'
+import { retryAfter } from '../../lib/timers.ts'
 import { ExtensionDetails } from '../onboarding/ui.tsx'
 import {
   CompleteLoginAction,
@@ -24,15 +26,11 @@ import {
 } from './refs.ts'
 import type { McpServerStatus } from './refs.ts'
 
-/**
- * Every server's state, read again every few seconds while one is connecting or waiting for a sign-in, just after the
- * next retry of a failed one, and every minute otherwise.
- */
 function useServers(enabled = true) {
   const [settling, setSettling] = useState(false)
   const status = useAction(StatusAction, null, {
     enabled,
-    onError: () => {},
+    onError: keepLast,
     every: settling ? 2_000 : 60_000,
   })
   const waiting =
@@ -43,9 +41,7 @@ function useServers(enabled = true) {
   const { refetch } = status
   useEffect(() => {
     if (!enabled || retry === Infinity) return undefined
-    // oxlint-disable-next-line typescript/no-floating-promises -- useAction reports failures and resolves undefined rather than rejecting.
-    const timer = setTimeout(() => void refetch(), Math.max(0, retry - Date.now()) + 500)
-    return () => clearTimeout(timer)
+    return retryAfter(Math.max(0, retry - Date.now()) + 500, () => void refetch())
   }, [enabled, retry, refetch])
   return status
 }
@@ -92,22 +88,16 @@ function Row({ server, onChanged }: { server: McpServerStatus; onChanged: () => 
     run(async () => {
       const servers = await api.action(LoginAction, { name: server.name })
       const url = servers.find((other) => other.name === server.name)?.loginUrl
-      // The click's activation survives the local round trip in most browsers, so the sign-in page opens from here;
-      // the row's link covers one that blocks it.
       if (url) window.open(url, '_blank', 'noreferrer')
     })
-  /** Completes the waiting sign-in from the address bar of the page a remote browser could not load. */
   const finish = () =>
     run(async () => {
-      // A failure keeps the pasted address in the field, so a typo can be corrected.
       await api.action(CompleteLoginAction, { name: server.name, url: pasted.trim() })
       setPasted('')
     })
   const logout = () => run(() => api.action(LogoutAction, { name: server.name }))
-  // Its missing secret, once saved in the Secrets panel, connects it again at once instead of at the next retry.
   useEvent('secrets:changed', (data) => {
     if (server.missing && (data as { name?: unknown } | undefined)?.name === server.missing)
-      // oxlint-disable-next-line typescript/no-floating-promises -- reconnect reports its failure in the row.
       void reconnect()
   })
   const retry = server.retryAt && Math.max(0, Math.ceil((server.retryAt - now) / 1000))
@@ -239,11 +229,6 @@ function Servers({ servers, onChanged }: { servers: McpServerStatus[]; onChanged
   )
 }
 
-/**
- * "mcp 2/3" in the status line: connected out of configured servers, red while one failed and warning-coloured while
- * one waits for a sign-in. Hidden while none is configured; the popover lists each server with its state, tool count,
- * sign-in controls and a reconnect button.
- */
 function Chip() {
   const { data: servers, refetch } = useServers()
   if (!servers?.length) return null
@@ -285,7 +270,6 @@ function Chip() {
   )
 }
 
-/** The server list under the mcp row of the Extensions panel. */
 function useDetails(name: string) {
   const { data: servers, refetch } = useServers(name === 'mcp')
   if (name !== 'mcp') return null

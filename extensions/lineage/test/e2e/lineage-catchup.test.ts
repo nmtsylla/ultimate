@@ -1,3 +1,4 @@
+import type { ConversationId, EntryId } from '@earendil-works/pi-durable'
 import { execFileSync } from 'node:child_process'
 import { mkdir, writeFile } from 'node:fs/promises'
 import { join } from 'node:path'
@@ -5,10 +6,11 @@ import { fauxAssistantMessage, fauxToolCall } from '@earendil-works/pi-ai/provid
 import type { FauxResponseFactory } from '@earendil-works/pi-ai/providers/faux'
 import { estimateTextTokens } from '@earendil-works/pi-ai/utils/estimate'
 import { ROOT_CONVERSATION_ID } from '@earendil-works/pi-durable'
-import type { ConversationId } from '@earendil-works/pi-durable'
 import { afterEach, beforeAll, expect, it } from 'vitest'
-import { abstract, leaveNote, Tally } from '../../server.ts'
+import { abstract, leaveNote } from '../../server.ts'
+import { Tally } from '../../api.ts'
 import { Seen, tallyText } from '../../catchup.ts'
+import { Standing } from '../../../subagents/api.ts'
 import { context } from '../../../../server/harness.ts'
 import {
   branchProbe,
@@ -179,7 +181,7 @@ it('does not catch up when a note and new commits arrive in the middle of a run'
     { harness: () => f.server.harness },
     ROOT_CONVERSATION_ID,
     'A sibling left a note.',
-    { from: 2 },
+    { from: 2 as ConversationId },
   )
   f.release()
   await run
@@ -197,6 +199,18 @@ it('does not catch up when a note and new commits arrive in the middle of a run'
         entry.kind === 'lineage.note' && (entry.data as { source?: string }).source === 'main',
     ),
   ).toHaveLength(1)
+})
+
+it('gives @ultimate no commit catch-up: its landing cards already name each landing', async () => {
+  const f = await catchupFixture()
+  await f.server.harness.commit(async (tx) => {
+    ;(await tx.doc(Standing, ROOT_CONVERSATION_ID)).ultimate = ROOT_CONVERSATION_ID
+  }, context)
+  repoGit(f.projectRoot, 'commit', '--allow-empty', '-m', 'Landed meanwhile')
+  await ask(f.server, ROOT_CONVERSATION_ID, 'continue work')
+  expect(
+    (await f.server.root.context(context)).entries.filter((entry) => entry.kind === 'lineage.note'),
+  ).toEqual([])
 })
 
 it('keeps a catch-up exactly once when reopened during the first request', async () => {
@@ -298,7 +312,8 @@ const branchFrom = async (server: Server, args: Record<string, unknown>) => {
 }
 const writeAbstract = (server: Server, id: ConversationId, text: string, title?: string) =>
   server.harness.commit(
-    (tx) => abstract(tx, id, { text, at: 1, ...(title ? { title, feature: 'Tally' } : {}) }),
+    (tx) =>
+      abstract(tx, id, { text, at: 1 as EntryId, ...(title ? { title, feature: 'Tally' } : {}) }),
     context,
   )
 const land = (server: Server, from: ConversationId, sha: string, divergence: string) =>

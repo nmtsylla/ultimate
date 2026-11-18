@@ -1,15 +1,28 @@
+import { parseConversationId } from './ids.ts'
+import type { ConversationId, Tx } from '@earendil-works/pi-durable'
 import type { Context } from '@earendil-works/chord/context'
-import type { ConversationId } from '@earendil-works/pi-durable'
 import type { ExtensionHost } from '../server/extensions.ts'
 
-/** Temporary copies act for their long-lived main. Read by kind to keep core extensions independent of side chats. */
 export async function actingAs(
   host: Pick<ExtensionHost, 'doc' | 'harness'>,
   id: ConversationId,
   context: Context,
 ): Promise<ConversationId> {
-  const doc = host.doc('sidechat')
-  if (!doc) return id
-  const side = await host.harness().snapshot(doc, id, context)
-  return (typeof side?.of === 'number' ? side.of : id) as ConversationId
+  const sidechatByKind = host.doc('sidechat')
+  if (!sidechatByKind) return id
+  const side = await host.harness().snapshot(sidechatByKind, id, context)
+  const readOnlyQuestionSideChatBorrowsNoIdentity = side?.question !== undefined
+  return typeof side?.of === 'number' && !readOnlyQuestionSideChatBorrowsNoIdentity
+    ? parseConversationId(side.of)
+    : id
+}
+
+export async function isSideChat(
+  host: Pick<ExtensionHost, 'doc'>,
+  tx: Pick<Tx, 'doc'>,
+  id: ConversationId,
+): Promise<boolean> {
+  const sidechatByKind = host.doc('sidechat')
+  if (!sidechatByKind) return false
+  return typeof (await tx.doc(sidechatByKind, id)).of === 'number'
 }
