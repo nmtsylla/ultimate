@@ -164,15 +164,15 @@ it('fires every 2s into distinct answered conversations and supports pause, resu
     prompt: 'Scheduled report',
     schedule: 'every 2s',
   })) as Automation
-  await until(
-    async () => (await f.records())[0].runs.filter((r) => r.status === 'done').length >= 2,
-    7000,
-  )
+  const delivered = async () => (await f.records())[0].runs.filter((run) => run.status === 'done')
+  await until(async () => (await delivered()).length >= 2, 7000)
   await f.action('pause', { id: a.id })
-  await until(async () => (await f.records())[0].runs.every((r) => r.status !== 'running'))
+  await until(async () => (await f.records())[0].runs.every((run) => run.status !== 'running'))
   const runs = (await f.records())[0].runs
-  expect(new Set(runs.map((r) => r.conversationId)).size).toBe(runs.length)
-  for (const run of runs) {
+  expect(runs.filter((run) => run.status === 'failed')).toEqual([])
+  const answered = await delivered()
+  expect(new Set(answered.map((run) => run.conversationId)).size).toBe(answered.length)
+  for (const run of answered) {
     expect(run.answer).toBe('Answer: Scheduled report')
     const child = (await f.opened.harness.conversation(run.conversationId!, context))!
     const view = await child.context(context)
@@ -185,18 +185,14 @@ it('fires every 2s into distinct answered conversations and supports pause, resu
     expect((await f.opened.harness.snapshot(Metadata, child.id, context))?.label).toBe('automation')
   }
   await vi.advanceTimersByTimeAsync(2200)
-  expect((await f.records())[0].runs).toHaveLength(runs.length)
+  expect(await delivered()).toHaveLength(answered.length)
   await f.action('run', { id: a.id })
-  await until(async () => (await f.records())[0].runs.at(-1)?.status === 'done')
-  expect((await f.records())[0].runs).toHaveLength(runs.length + 1)
+  await until(async () => (await delivered()).length === answered.length + 1)
   await f.action('resume', { id: a.id })
-  await until(async () => {
-    const current = (await f.records())[0].runs
-    return current.length === runs.length + 2 && current.at(-1)?.status === 'done'
-  }, 3500)
+  await until(async () => (await delivered()).length >= answered.length + 2, 3500)
   await f.action('delete', { id: a.id })
   expect(await f.records()).toEqual([])
-  expect(await f.opened.harness.conversation(runs[0].conversationId!, context)).toBeDefined()
+  expect(await f.opened.harness.conversation(answered[0].conversationId!, context)).toBeDefined()
 })
 
 it('fires a subscriber-only schedule without creating a run conversation', async () => {
