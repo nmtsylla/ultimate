@@ -196,7 +196,8 @@ when the lockfile moves, pushes `origin`, wakes @ultimate only when the range ne
 
 ## D. History that must not come back
 
-**Mission Control** (a fleet dashboard in `extensions/status`) was added in #2400 and removed in `d22b236b`. Upstream
-never had it. A merge must not resurrect its files, its `mission-control` settings key, or the `status` fields it added
-(`url`, `setup`, `goal`); the remaining `extensions/status` and `test/status.test.ts` differences are leftovers of its
-removal.
+**Mission Control** was its own extension, `extensions/mission-control/` (a surface, a fleet action, a test), added in
+#2400 and removed in `d22b236b` together with the `status` fields it had added (`url`, `setup`, `goal`), its `setup` and
+`goal` API additions and its `mission-control` settings key. Upstream never had it. A merge must not resurrect the
+folder, the key or those fields; the `extensions/status` differences that remain against upstream are leftovers of the
+removal (one README sentence and a mock parameter in its test).
