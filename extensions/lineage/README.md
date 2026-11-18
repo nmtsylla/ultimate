@@ -69,7 +69,9 @@ of at most 120 characters, `body` at most 2000, `source` a `#<conversation>/<ent
 - **Landings.** Each landing in a tree (not from the root itself) asks the summary model once for memory ops in the
   root, with the landing note, the submitter's abstract and every memory. It defaults to no ops, prefers updates to
   near-duplicates, deletes or rewrites what the landing replaced, and merges at the cap. Without a summary model nothing
-  happens; a refused answer is asked once more, then left as a notice. The landing itself never fails on it.
+  happens; a refused answer is asked once more, then left as a diagnostic notice, as is a call that failed, since a
+  landing is distilled only once and the note stays in the tree as the source a later distillation reads. The landing
+  itself never fails on it.
 
 The **Memory** surface (`MEMORY_SURFACE` in `ui.tsx`, opened from the sidebar's Memory row) shows every root's memory
 grouped into Decisions, Facts and Lessons, newest first, with a filter, the count and brief size, and the `MemoryHeader`
