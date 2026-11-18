@@ -59,7 +59,7 @@ import type { KeptWork } from '../conversations/types.ts'
 import { LanderState } from './lander.tsx'
 import { StandingPhase, WaitingOnUser } from './ultimate.tsx'
 import { useShell, useSidebarState } from './state.tsx'
-import { topLevelRows } from './listed.ts'
+import { landerRows, topLevelRows } from './listed.ts'
 import { UnderUltimate, Unlisted } from './ui.tsx'
 
 const useShownId = () => useStore((state) => state.view?.conversation.id ?? state.requested)
@@ -164,15 +164,9 @@ function Tree({
   const [expanded, setExpanded] = useSidebarState<number[]>('expanded', [])
   const working = workingByTop(conversations)
   const topLevel = topLevelRows(conversations, new Set(unlisted.flatMap((set) => [...set])))
-  const landerIds = topLevel.filter((conversation) => conversation.label === 'lander')
-  const knownLander = Object.values(workspaceIndex.landerConversations)
-    .concat(standingIds?.lander ?? [])
-    .find((id) => landerIds.some((conversation) => conversation.id === id))
-  const landerId = knownLander ?? landerIds.at(-1)?.id
-  const strayLanders = new Set(
-    landerIds
-      .filter((conversation) => landerId !== undefined && conversation.id !== landerId)
-      .map((conversation) => conversation.id),
+  const { landerId, stray: strayLanders } = landerRows(
+    topLevel,
+    Object.values(workspaceIndex.landerConversations).concat(standingIds?.lander ?? []),
   )
   const ultimateId = standingIds?.ultimate
   const timers = timerWaits(useAutomations(5000).data, standingIds)
