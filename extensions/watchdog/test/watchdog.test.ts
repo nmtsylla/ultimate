@@ -27,8 +27,10 @@ import {
   ROOT_CONVERSATION_ID,
 } from '@earendil-works/pi-durable'
 import { afterEach, expect, it } from 'vitest'
-import watchdog, { diagnose } from '../server.ts'
+import watchdog, { actions, diagnose } from '../server.ts'
 import type { WatchdogService } from '../api.ts'
+import type { Failure } from '../refs.ts'
+import type { ActionContext } from '../../../server/actions.ts'
 import { Messages } from '../../messages/api.ts'
 import { Standing, Subagents } from '../../subagents/api.ts'
 import { Roots, Tally } from '../../lineage/api.ts'
@@ -810,14 +812,46 @@ it('recovers no-model failures separately from earlier reply-expecting inputs an
   expect(await f.tasks()).toHaveLength(2)
 })
 
-it('uses a notice, not a card, when @ultimate fails after one retry', async () => {
+it('writes a card into @ultimate’s own conversation when its run fails after one retry', async () => {
   const f = await fixture(() => error(overloaded))
   await (await f.submit(f.ultimate, 'fail')).wait(context)
   await f.sleeping()
   f.advance(60_000)
-  await until(async () => f.notices.length === 1)
+  await until(async () => (await f.entries()).length === 1)
+  expect((await f.entries())[0].data).toMatchObject({
+    conversation: f.ultimate,
+    error: overloaded,
+    step: 'model request',
+    retried: true,
+  })
   expect(f.notices[0]).toContain('After one automatic retry')
-  expect(await f.entries()).toHaveLength(0)
+})
+
+it('retries @ultimate’s own failure once from its card, and writes nothing else', async () => {
+  const f = await fixture((transcript) =>
+    inputText(transcript) === 'fail' ? error('429 Too Many Requests') : fauxAssistantMessage('ok'),
+  )
+  const retry = () =>
+    actions.retry({ conversation: f.ultimate, failedTask }, {
+      host: f.host,
+    } as unknown as ActionContext)
+  await (await f.submit(f.ultimate, 'fail')).wait(context)
+  await until(async () => (await f.entries()).length === 1)
+  const { failedTask, ...card } = (await f.entries())[0].data as Failure & { failedTask: number }
+  expect(card).toMatchObject({
+    conversation: f.ultimate,
+    error: '429 Too Many Requests',
+    retried: false,
+  })
+  const requests = async (requestId: string) =>
+    (
+      await f.host.scanSubmissions({ conversationId: f.ultimate }, 100, undefined, context)
+    ).items.filter((input) => input.requestId === requestId)
+  expect((await requests(`watchdog-report:${failedTask}`))[0]?.type).toBe('write')
+  expect(await requests(`watchdog-retry:${failedTask}`)).toEqual([])
+  await Promise.all([retry(), retry()])
+  await until(async () => (await f.entries(f.ultimate, 'pi.assistant')).length === 2)
+  expect((await requests(`watchdog-retry:${failedTask}`)).length).toBe(1)
 })
 
 it('reports a broken login at once, with a hint to log in again and no retry', async () => {
