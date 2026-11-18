@@ -240,9 +240,6 @@ export async function askSummaryModel(
       ...(thinking === 'off' ? {} : { reasoning: thinking }),
       maxTokens: Math.min(receipt.maxTokens ?? summaryOutputBudget, model.maxTokens || Infinity),
       signal,
-      // opencode.ai's gateway answers 400 MissingSessionID to a request that names no session, which silenced every
-      // summary, title, abstract and landing memory on this machine (see #16904): it adds x-opencode-session from
-      // this. `disableContinuation` keeps a provider's own server-side threads out of a one-shot request.
       sessionId: receipt.sessionId ?? randomUUID(),
       disableContinuation: true,
     },
@@ -746,7 +743,6 @@ export function summaryBehavior(host: SummaryHost, generate = generateSummary) {
           ),
           checkpoint.answer,
         )
-        // A failed request is reported once the commit settled it, never in the middle of one.
         let failed: string | undefined
         let answered = false
         await runtime.commit(async (tx) => {
@@ -778,7 +774,7 @@ export function summaryBehavior(host: SummaryHost, generate = generateSummary) {
           if (!refreshCanPublishWhileBusy) state.assessmentStatus = outcome
           if (checkpoint.summary) state.status = outcome
           if (!result || !usable) {
-            if (!result) failed = failure ?? 'no result'
+            if (!result) failed = summaryFailure ?? 'no result'
             return discard(tx, runtime.conversationId, {
               reason: result ? 'stale' : 'error',
               cause: result ? 'newer work or a reset' : (summaryFailure ?? 'no result'),
@@ -847,8 +843,6 @@ export function summaryBehavior(host: SummaryHost, generate = generateSummary) {
           }
           return terminal
         }, context)
-        // A failed summary costs a title, a summary, an abstract and a landing's memory: say so where the user sees it,
-        // not only in an entry nothing reads. A superseded result is not a failure.
         if (failed)
           reportSummaryFailure(host, modelOf(response, model).model ?? 'the summary model', failed)
         else if (answered) summaryAnswered(host, modelOf(response, model).model)

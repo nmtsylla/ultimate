@@ -201,8 +201,6 @@ export default function tailscale(host: ExtensionHost) {
       const localPort = Number(new URL(host.system().process.url).port || '80')
       await withRegistry(async (registry) => {
         const serve = JSON.parse((await command(['serve', 'status', '--json'])).stdout) as Serve
-        // A renamed machine leaves its Serve entries under the old MagicDNS name: unreachable, and read as foreign.
-        // Serving the port again adds it under the current name; those entries stay until `tailscale serve reset`.
         for (const authority of Object.keys(serve.Web ?? {}))
           if (authority.slice(0, authority.lastIndexOf(':')) !== dns) delete serve.Web?.[authority]
         for (const [port, entry] of Object.entries(serve.TCP ?? {}))

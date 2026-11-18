@@ -4,6 +4,7 @@ import type { ChildProcess } from 'node:child_process'
 import { once } from 'node:events'
 import { mkdir, readdir, realpath } from 'node:fs/promises'
 import { parseArgs } from 'node:util'
+import { meansNone } from '../lib/errors.ts'
 import { projectHome } from '../lib/project-paths.ts'
 import { acquireLock, alive, lockHeld, readOwner, retireStorageOwner } from '../lib/lock.ts'
 import { deadline, pace } from '../lib/timers.ts'
@@ -88,14 +89,10 @@ async function printLine(text: string) {
   process.stdout.write(`${text}\n`, (error) => (error ? reject(error) : resolve()))
   await promise
 }
-/** The remote HTTPS origin a running instance currently serves, read from its own system info. */
 async function remoteUrl(port: number) {
   const response = await fetch(`http://127.0.0.1:${port}/api/events`, {
     signal: AbortSignal.timeout(2000),
-  }).catch(() => {
-    // A starting or stopped instance has no reachable system info.
-    return undefined
-  })
+  }).catch(meansNone)
   if (!response?.body) return undefined
   const reader = response.body.getReader()
   const decoder = new TextDecoder()
@@ -131,8 +128,7 @@ async function remoteUrl(port: number) {
   } catch {
     return undefined
   } finally {
-    // The stream may already be closed by the server; cancelling is best effort.
-    await reader.cancel().catch(() => {})
+    await reader.cancel().catch(meansNone)
   }
 }
 async function runningProjects() {
@@ -194,8 +190,8 @@ async function stopProject(projectRoot: string) {
     if (!(error instanceof Error && 'code' in error && error.code === 'ESRCH'))
       throw new Error(`Cannot stop Ultimate supervisor pid ${owner.pid}`, { cause: error })
   }
-  const deadline = Date.now() + 10000
-  while (Date.now() < deadline) {
+  const expiresAt = Date.now() + 10000
+  while (Date.now() < expiresAt) {
     const current = await readOwner(lockPath)
     if (!lockHeld(lockPath) || current?.pid !== owner.pid || identify(owner.pid) !== identity) {
       await printLine(`Stopped Ultimate for ${projectRoot}.`)

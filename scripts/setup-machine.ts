@@ -13,10 +13,6 @@ export interface UnitOptions {
   home: string
   node: string
   path: string
-  /**
-   * The Chromium environment the service gets on this machine, merged into the unit's Environment: nothing when the
-   * machine has no browser the service could use. `main` decides it; `services` says why each line is there.
-   */
   browser: Record<string, string>
 }
 
@@ -125,22 +121,11 @@ export function servicePath(node: string, path: string, misread?: RegExp) {
   ].join(':')
 }
 
-/**
- * The folder holding the GTK, ATK, ALSA and GBM libraries this machine's Chromium needs and does not have in the
- * system paths, when it is installed there; the unit passes it as LD_LIBRARY_PATH. An absent folder leaves the line
- * out instead of rendering it empty.
- */
 export function chromiumLibs(home: string, exists = existsSync) {
   const dir = join(home, '.local/lib/chrome-deps')
   return exists(dir) ? dir : undefined
 }
 
-/**
- * Whether Chromium's sandbox cannot work on this machine, which the unit answers with ULTIMATE_CHROMIUM_SANDBOX=0.
- * The sandbox needs unprivileged user namespaces, which AppArmor restricts on Ubuntu 23.10+ and later
- * (`kernel.apparmor_restrict_unprivileged_userns`) and older Debian kernels switch off entirely
- * (`kernel.unprivileged_userns_clone`); the launch that fails says "No usable sandbox!".
- */
 export function sandboxBlocked(
   read: (file: string) => string = (file) => readFileSync(file, 'utf8'),
   platform = process.platform,
@@ -150,7 +135,6 @@ export function sandboxBlocked(
     try {
       return read(file).trim()
     } catch {
-      // Kernels without that switch have no such restriction, which is the common case.
       return ''
     }
   }
@@ -168,14 +152,6 @@ function services(options: UnitOptions, path: string): Service[] {
       label: 'com.ultimate.app',
       description: `Ultimate (${project})`,
       cwd: project,
-      // The browser's environment goes in so reinstalling Ultimate does not leave the screenshot and browser tools
-      // without a Chromium (#16883). `ULTIMATE_CHROMIUM` names the `chrome` launch script Playwright installs, not the
-      // `chrome.bin` beside it: `chrome` puts its build's own libraries on the loader path before exec'ing `chrome.bin`,
-      // which on its own dies with `libatk-1.0.so.0: cannot open shared object file`. LD_LIBRARY_PATH is where this
-      // machine keeps the system libraries Chromium needs and does not install globally (GTK, ATK, ALSA, GBM), and
-      // ULTIMATE_CHROMIUM_SANDBOX=0 answers a kernel that restricts the unprivileged user namespaces Chromium's sandbox
-      // needs, where it would otherwise die with "No usable sandbox!" (extensions/browser/README.md). `main` leaves a
-      // line out where it does not apply.
       env: { PATH: path, ULTIMATE_NO_OPEN: '1', ...options.browser },
       args: [node, join(clone, 'bin/ultimate.ts'), '--foreground'],
     },
@@ -311,11 +287,6 @@ async function main() {
   const dry = values['dry-run'] === true
   const home = homedir()
   const clone = resolve(fileURLToPath(new URL('..', import.meta.url)))
-  // What the unit has to tell the browser on this machine, each line only where it applies: a machine without a
-  // Chromium gets none of them, and one whose kernel can run Chromium's sandbox keeps it.
-  // The Chromium is resolved from what is installed rather than from ULTIMATE_CHROMIUM: run by a running Ultimate, that
-  // variable comes from the unit this run replaces, and taking it back would pin a wrapper the unit already had to work
-  // around (libraries under /tmp, a Playwright build a newer install replaced).
   const chromium = await chromiumBinary({})
   const libs = chromiumLibs(home)
   const browser: Record<string, string> = chromium

@@ -9,7 +9,7 @@ import type { FauxResponseFactory } from '@earendil-works/pi-ai/providers/faux'
 import type { ToolResultMessage } from '@earendil-works/pi-ai'
 import { CodingTools } from '@earendil-works/pi-durable/tools'
 import { configure } from '@earendil-works/pi-durable'
-import type { JsonObject } from '@earendil-works/pi-durable'
+import type { ConversationId, EntryId, JsonObject } from '@earendil-works/pi-durable'
 import { expect, it } from 'vitest'
 import { context, prepareHarness } from '../../../server/harness.ts'
 import type { OpenHost } from '../../../server/harness.ts'
@@ -53,6 +53,7 @@ async function fixture(project: JsonObject = {}) {
   prepared.registry.install(CodingTools)
   prepared.registry.install(
     codingPlan({
+      implement: () => {},
       react: () => {},
       metadata: Metadata,
       onOpen: () => {},
@@ -256,7 +257,12 @@ it('arms new branch events by default and only while enabled, with project targe
           thinkingLevel: 'high',
           cwd: f.projectRoot,
         })
-        await f.emit(tx, Branched, { id: created.id, from: 1, at: 1, intent })
+        await f.emit(tx, Branched, {
+          id: created.id,
+          from: 1 as ConversationId,
+          at: 1 as EntryId,
+          intent,
+        })
         return created.id
       }, context)
 

@@ -1,8 +1,3 @@
-/**
- * OAuth for HTTP MCP servers: where one server's client registration and tokens live, the provider that refreshes them,
- * and the browser login over a loopback callback. pi-mcp owns the protocol; this file owns the storage and the round
- * trip.
- */
 import { createHash } from 'node:crypto'
 import { mkdir } from 'node:fs/promises'
 import { join } from 'node:path'
@@ -15,16 +10,13 @@ import type {
 } from '@earendil-works/pi-mcp/oauth'
 import { readJson, writeJson } from '../../lib/json-file.ts'
 
-/** `~/.ultimate/mcp-oauth/`, owner-only, next to the settings it never appears in. */
 const oauthDir = (userHome: string) => join(userHome, '.ultimate/mcp-oauth')
 
-/** The file holding one server URL's OAuth state: a hash of the URL, so no server name or URL is on disk. */
 export const oauthStatePath = (userHome: string, serverUrl: string) =>
   join(oauthDir(userHome), `${createHash('sha256').update(key(serverUrl)).digest('hex')}.json`)
 
 const key = (serverUrl: string) => String(new URL(serverUrl))
 
-/** The durable OAuth state of one server URL, written atomically and readable only by its owner. */
 export function oauthStore(userHome: string, serverUrl: string): McpOAuthStateStore {
   const path = oauthStatePath(userHome, serverUrl)
   return {
@@ -45,13 +37,8 @@ export function oauthStore(userHome: string, serverUrl: string): McpOAuthStateSt
   }
 }
 
-/** What the authorization server shows a user during dynamic client registration. */
 const clientMetadata = { client_name: 'Ultimate', software_id: 'ultimate' }
 
-/**
- * The OAuth state a server URL has now: signed in when it holds tokens, with their expiry when the server said so, and
- * the credential values a caller masks from any error it shows.
- */
 export async function storedCredentials(userHome: string, serverUrl: string) {
   const state = await oauthStore(userHome, serverUrl).load()
   return {
@@ -65,10 +52,6 @@ export async function storedCredentials(userHome: string, serverUrl: string) {
   }
 }
 
-/**
- * The provider for one server URL. The transport asks it for a token and to recover from a 401; `onRedirect` runs when
- * a flow needs the browser, which only a sign-in started here can serve.
- */
 export const oauthProvider = (options: {
   userHome: string
   serverUrl: string
@@ -83,16 +66,13 @@ export const oauthProvider = (options: {
     onRedirect: options.onRedirect,
   })
 
-/** Drops a server's client registration, tokens, verifier and discovery state, as signing out does. */
 export async function forgetCredentials(userHome: string, serverUrl: string) {
-  // No flow starts here, so the provider never redirects to a browser.
   await oauthProvider({ userHome, serverUrl, onRedirect: () => {} }).invalidateCredentials('all')
 }
 
 const escape = (text: string) =>
   text.replace(/[&<>"']/g, (character) => `&#${character.charCodeAt(0)};`)
 
-/** The page the browser lands on after the redirect. */
 const callbackPage = (page: OAuthCallbackPage) => {
   const title = page.ok ? 'Signed in' : 'Sign-in failed'
   const body = page.ok
@@ -114,7 +94,6 @@ const callbackPage = (page: OAuthCallbackPage) => {
 <body><main><h1><span class="dot"></span>${escape(title)}</h1><p>${body}</p></main></body></html>`
 }
 
-/** A free loopback port, preferring the one a stored client registered so its redirect URI still matches. */
 async function listener(stored: McpOAuthState | undefined) {
   const registered = (stored?.clientInformation as { redirect_uris?: unknown } | undefined)
     ?.redirect_uris
@@ -124,7 +103,6 @@ async function listener(stored: McpOAuthState | undefined) {
     try {
       return await OAuthCallbackServer.listen({ port, renderPage: callbackPage })
     } catch (error) {
-      // Another process holds the port a client was registered with: a free port needs a new registration.
       if ((error as NodeJS.ErrnoException).code !== 'EADDRINUSE') throw error
     }
   }
@@ -132,31 +110,18 @@ async function listener(stored: McpOAuthState | undefined) {
 }
 
 export type LoginFlow = {
-  /** The page to open in the browser, when the server needs it; absent when stored tokens still worked. */
   url?: string
-  /**
-   * Completes a waiting sign-in from the address bar of the page the browser failed to load, or from a bare code: the
-   * browser may be on another machine, where the loopback redirect cannot reach this one. Absent without `url`.
-   */
   complete?: (pasted: string) => Promise<void>
-  /** Resolves once tokens are stored; rejects when consent is denied, the callback times out or the exchange fails. */
   authorized: Promise<void>
-  /** Stops waiting for the browser. Safe to call twice. */
   close(): Promise<void>
 }
 
-/** The authorization response an address bar or a bare code carries; a bare code has no `state` to check. */
 type AuthorizationResponse = Omit<OAuthCallback, 'state'> & { state?: string }
 
-/**
- * What a pasted address bar (or a bare authorization code) holds: the `code` the exchange needs, the `state` the
- * sign-in checks, and the `iss` RFC 9207 validates. A denied consent comes as `error` instead of `code`.
- */
 function pastedResponse(input: string): AuthorizationResponse {
   const text = input.trim().replace(/^<|>$/g, '')
   if (!text)
     throw new Error('Paste the address of the page that failed to load, or the code it shows')
-  // A browser shows the full address; one copied without its scheme is still the redirect, not a code.
   const address = /^https?:\/\//i.test(text)
     ? text
     : /^[^\s?#]+\?/.test(text)
@@ -185,11 +150,6 @@ function pastedResponse(input: string): AuthorizationResponse {
   return { code, ...(state === null ? {} : { state }), ...(iss === null ? {} : { iss }) }
 }
 
-/**
- * Signs one server in: discovery, client registration when none is stored, and the authorization request. With stored
- * tokens that still refresh it finishes without the browser; otherwise it returns the URL to open and completes when the
- * redirect arrives on the loopback listener.
- */
 export async function beginLogin(options: {
   userHome: string
   serverUrl: string
@@ -205,7 +165,6 @@ export async function beginLogin(options: {
     try {
       await server.close()
     } catch (error) {
-      // A pending wait fails either way, and the listener's socket is gone with the process.
       console.warn('MCP OAuth: closing the callback listener failed:', error)
     }
   }
@@ -218,8 +177,6 @@ export async function beginLogin(options: {
       page = url.href
     },
   })
-  // A client is only reusable when the redirect URI it was registered with is known and is the one listening now: a
-  // server that does not echo `redirect_uris` gets a fresh registration instead of a rejected authorize step.
   const registered = (await store.load())?.clientInformation as
     | { redirect_uris?: unknown }
     | undefined
@@ -245,8 +202,6 @@ export async function beginLogin(options: {
     return { authorized: Promise.resolve(), close }
   }
   const state = await provider.state()
-  // The browser's redirect and a pasted address bar carry the same authorization response, and whichever arrives first
-  // runs the one exchange: a code is single-use, so a second exchange would only fail.
   let exchange: Promise<unknown> | undefined
   const finish = (callback: { code: string; iss?: string }) =>
     (exchange ??= step(callback.code, callback.iss))
@@ -268,8 +223,6 @@ export async function beginLogin(options: {
         'That address belongs to another sign-in: press Connect again and paste the address of the new one',
       )
     pasted(callback)
-    // The exchange runs on `authorized`; awaiting it here turns a rejected or reused code into this action's failure,
-    // worded as the flow words it rather than as a malformed paste.
     try {
       await authorized
     } catch (error) {

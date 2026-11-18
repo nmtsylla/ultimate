@@ -796,7 +796,8 @@ export async function loadExtensions(
               [...messages]
                 .filter(
                   ([, { diagnostic, untilSecretSet }]) =>
-                    diagnostic || (untilSecretSet !== undefined && !storedSecrets.has(untilSecretSet)),
+                    diagnostic ||
+                    (untilSecretSet !== undefined && !storedSecrets.has(untilSecretSet)),
                 )
                 .map(([message]) => message),
             ),

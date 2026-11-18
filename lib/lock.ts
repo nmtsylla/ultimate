@@ -12,7 +12,6 @@ export function alive(pid: number) {
     return !isNoProcess(error)
   }
 }
-/** Whether another process currently holds this lock's SQLite transaction. */
 export function lockHeld(path: string) {
   const databasePath = `${path}.db`
   if (!existsSync(databasePath)) return false

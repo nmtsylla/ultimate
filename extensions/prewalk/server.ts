@@ -31,6 +31,7 @@ import type { ActionInput } from '../../lib/actions.ts'
 import { hasLogin, hostDefault, previewModel } from '../../lib/agents.ts'
 import { definitionRuns, refName, refOf } from '../../lib/families.ts'
 import { readFamilies } from '../../lib/families-settings.ts'
+import { safeToRerun } from '../../lib/replay.ts'
 import { readSettings, userSettingsPath } from '../../lib/settings.ts'
 import { Branched } from '../lineage/api.ts'
 import { Family } from '../models/api.ts'
@@ -47,7 +48,6 @@ export const Prewalk = defineDoc<PrewalkState>({
   fork: 'initial',
   initial: () => ({}),
 })
-/** Automatic arming's durable setting and the last disabled interval's bounds, shared by every reload. */
 export const Automatic = defineDoc<{ enabled: boolean; disabledAt?: string; enabledAt?: string }>({
   kind: 'prewalk.automatic',
   checkpointWhen: () => false,
@@ -62,10 +62,8 @@ export const docs = [Prewalk, Automatic]
 type Armed = NonNullable<PrewalkState['armed']>
 type Resolved = Omit<Armed, 'at'>
 
-/** A plain JSON value, detached from a transaction's live document overlay. */
 const plain = <T>(value: T): T => JSON.parse(JSON.stringify(value)) as T
 
-/** The target a family or explicit provider/model resolves to for this conversation, clamped as Pi clamps a model pick. */
 async function resolveTarget(
   host: ExtensionHost,
   agent: { model?: ModelRef; thinkingLevel?: ModelThinkingLevel },
@@ -81,7 +79,6 @@ async function resolveTarget(
     )
   const runs = definitionRuns(pinned ? { model: pinned } : { family: target }, families)
   const fallback = runs.model ? undefined : await hostDefault(host)
-  // A preview pins every agent to its one model; prewalk must not escape it either.
   const preview = previewModel()
   const model = preview ?? runs.model ?? fallback?.model
   if (!model || !hasLogin(host.modelRuntime.getAvailableSnapshot(), model))
@@ -103,10 +100,6 @@ async function resolveTarget(
 const nothingToSwitch = (resolved: Resolved) =>
   `Nothing to switch: the conversation already runs ${refName(resolved.target)}${resolved.thinking ? ` · ${resolved.thinking}` : ''}; prewalk is disarmed`
 
-/**
- * Arm inside the caller's transaction. A no-op target disarms as requested, but returns a marker so the caller throws
- * only after that disarm has committed; a missing login or invalid target changes nothing.
- */
 async function armTx(host: ExtensionHost, tx: Tx, id: ConversationId, target?: string) {
   if (!(await tx.conversation(id))) throw new Error(`No conversation #${id}`)
   const agent = await tx.doc(AgentDoc, id)
@@ -132,7 +125,6 @@ async function arm(
 ) {
   const outcome = await commit(async (tx) => {
     const result = await armTx(host, tx, id, target)
-    // #8088: tool/action results cross the settled transaction boundary; a live overlay cannot be serialized.
     return { ...result, state: plain(result.state) }
   })
   if (outcome.noop) throw new Error(nothingToSwitch(outcome.noop))
@@ -174,7 +166,6 @@ export const actions = {
   }),
 }
 
-/** The automatic-arming setting, layered defaults → user → project. Automatic arming is on unless explicitly disabled. */
 async function automaticTarget(host: ExtensionHost) {
   const user = (await readSettings(userSettingsPath(host.userHome))).prewalk
   const project = (await host.projectSettings()).prewalk
@@ -201,7 +192,6 @@ async function automaticTarget(host: ExtensionHost) {
   return merged.enabled ? merged.target : undefined
 }
 
-/** Record an automatic-arming transition only when it changes; the last disabled interval survives every reload. */
 async function automaticTransition(host: ExtensionHost, enabled: boolean) {
   return host.harness().commit(async (tx) => {
     const state = await tx.doc(Automatic, ROOT_CONVERSATION_ID)
@@ -213,7 +203,12 @@ async function automaticTransition(host: ExtensionHost, enabled: boolean) {
   }, context)
 }
 
-/** A successful direct edit/write call's path, when it stays inside the conversation's own cwd. */
+const inDisabledInterval = (at: string, automatic: { disabledAt?: string; enabledAt?: string }) =>
+  automatic.disabledAt !== undefined &&
+  automatic.enabledAt !== undefined &&
+  at >= automatic.disabledAt &&
+  at < automatic.enabledAt
+
 function projectEdit(
   assistant: AssistantMessage | undefined,
   result: ToolResultMessage,
@@ -231,7 +226,6 @@ function projectEdit(
   return within !== '' && within !== '..' && !within.startsWith(`..${sep}`) && !isAbsolute(within)
 }
 
-/** The plan gate, read without creating a missing plan: an enabled plan needs a task; without it, the edit is enough. */
 async function hasPlanTask(host: ExtensionHost, id: ConversationId, ctx: Context) {
   const token = host.doc('ultimate.plan')
   if (!token) return true
@@ -239,7 +233,6 @@ async function hasPlanTask(host: ExtensionHost, id: ConversationId, ctx: Context
   return Object.values(plan?.epics ?? {}).some((epic) => Object.keys(epic.tasks).length > 0)
 }
 
-/** Configure and record the handoff atomically. Replaying the hook sees no `armed` state and does nothing. */
 async function switchAfterEdit(
   host: ExtensionHost,
   assistantId: EntryId,
@@ -298,31 +291,21 @@ export default function prewalk(host: ExtensionHost) {
     try {
       const requested = await automaticTarget(host)
       const automatic = await automaticTransition(host, requested !== undefined)
-      // #8088: disabled prewalk has no branch reactor; even its cursor commit delayed lineage's title watcher.
       if (requested === undefined) return
       registered = true
       host.react(
         'arm-branches',
         [Branched],
         async (tx, event) => {
-          // Advance over a disabled interval without arming it; enabled events on either side still replay.
-          if (
-            automatic.disabledAt &&
-            automatic.enabledAt &&
-            event.at >= automatic.disabledAt &&
-            event.at < automatic.enabledAt
-          )
-            return
+          if (inDisabledInterval(event.at, automatic)) return
           try {
             const target = await automaticTarget(host)
             if (target === undefined) return
-            await armTx(host, tx, event.data.id as ConversationId, target)
+            await armTx(host, tx, event.data.id, target)
           } catch (error) {
-            // A bad or unavailable automatic target leaves the branch usable; explicit arm still reports its own error.
             host.notice(`Could not arm prewalk for #${event.data.id}: ${String(error)}`)
           }
         },
-        // Existing branches must not become armed when the extension or setting is first enabled.
         { from: 'now' },
       )
     } catch (error) {
@@ -344,8 +327,9 @@ export default function prewalk(host: ExtensionHost) {
         name: 'prewalk',
         description:
           'Arm a one-shot model handoff in this conversation. Once a plan has a task, the first successful edit/write inside the conversation cwd switches to the target with the full context intact and disarms. Failed, outside-cwd and read-only calls do not switch. arm {action:"arm",target?} accepts a model family (default fast) or provider/modelId; disarm cancels; status reads the state.',
-        // The memoized result covers interruption; repeating arm/disarm only rewrites conversation state.
-        replay: 'safe',
+        ...safeToRerun(
+          'the memoized result covers interruption; repeating arm/disarm only rewrites conversation state',
+        ),
         parameters: obj({
           action: strEnum(['arm', 'disarm', 'status'] as const),
           target: opt(str({ description: 'For arm: a model family or provider/modelId.' })),

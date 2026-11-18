@@ -195,11 +195,7 @@ function localReads(host: ExtensionHost, context: Context) {
   } satisfies Record<Read, (args: unknown[]) => unknown>
 }
 
-/**
- * What `project` means in a read's options, for every helper that takes one: a name or key, never a path or id, and
- * only a running instance answers. Told once here, repeated in each helper's description where an agent reads it.
- */
-const PROJECT =
+const projectOptionDescription =
   "`project` names another project (`my-app` or `github.com/acme/my-app`), never a path or an id. Only a running instance answers: another project on this machine, one the user listed in `remotes`, or, with cloud backups, at the tailnet address its machine registered; `machine` picks one machine's instance. A stopped, unreachable or unknown project fails with a sentence naming it."
 
 function globals(
@@ -302,7 +298,7 @@ function globals(
       name: 'trace',
       description:
         "Recorded calls (service, action, reactor, tool, model): the newest `limit` (default 100, at most 1000), oldest first; filter by trace id or conversation, and by ISO `since` and `until`, both exclusive and on the millisecond a call's `at` shows: `since` keeps the calls that started after it, `until` those that started before, so passing the oldest `at` you have as `until` walks the log backwards. " +
-        PROJECT,
+        projectOptionDescription,
       signature:
         '(query?: { trace?: string; conversation?: number; since?: string; until?: string; limit?: number; project?: string; machine?: string }): Promise<{ id: string; parent?: string; trace: string; at: string; ms: number; caller: string; callee: string; kind: string; name: string; ok: boolean; error?: string; args?: string; result?: string; conversation?: number; task?: number; entry?: number }[]>',
       execute: read('trace', 0),
@@ -311,7 +307,7 @@ function globals(
       name: 'traceTree',
       description:
         'The calls of one trace nested under their parents (`children`), in start order. ' +
-        PROJECT,
+        projectOptionDescription,
       signature:
         '(traceId: string, options?: { project?: string; machine?: string }): Promise<unknown[]>',
       execute: read('traceTree', 1),
@@ -336,7 +332,7 @@ function globals(
       name: 'tell',
       description:
         "Message another project's @ultimate (only @ultimate reaches it, as a message from you, never the user), as @ultimate only; with reply (default true) its answer returns to you as a reply. " +
-        PROJECT,
+        projectOptionDescription,
       signature:
         '(input: { project: string; text: string; reply?: boolean; machine?: string }): Promise<{ message: number; delivered: number }>',
       execute: ([input], { signal }) => {
@@ -363,7 +359,7 @@ function globals(
       name: 'conversations',
       description:
         'All stored conversations: id, owner, and for listed ones title, label, cwd, busy, inputAt and concluded. chapter reads another chapter read-only (not with project); cross-chapter links are written <chapter>#123. ' +
-        PROJECT,
+        projectOptionDescription,
       signature:
         '(options?: { project?: string; machine?: string; chapter?: string }): Promise<unknown[]>',
       execute: read('conversations', 0),
@@ -372,7 +368,7 @@ function globals(
       name: 'entries',
       description:
         'Newest-first fork-aware stored history, including before resets and compactions. before is an exclusive entry ID. Entries are compact: message text whole; a tool result over 1000 characters keeps its first 300 and last 700; tool arguments are cut to 200 characters and non-pi data to 500 as JSON; no thinking or usage. full returns the stored records. ' +
-        PROJECT,
+        projectOptionDescription,
       signature:
         '(conversationId: number, options?: { kinds?: string[]; limit?: number; before?: number; full?: boolean; project?: string; machine?: string; chapter?: string }): Promise<{ id: number; kind: string; at?: string; role?: string; tool?: string; text?: string; tools?: { name: string; args: string }[]; stopReason?: string; error?: string | true; data?: string }[]>',
       execute: read('entries', 1),
@@ -381,7 +377,7 @@ function globals(
       name: 'search',
       description:
         'Case-sensitive substring search over all stored entry JSON, including history before resets and compactions. kinds keeps only those entry kinds. Hits are compact, about 200 characters of the entry JSON around the match; full returns whole entries, or read one with entries(conversation, {before: id + 1, limit: 1}). ' +
-        PROJECT,
+        projectOptionDescription,
       signature:
         '(text: string, options?: { conversationId?: number; kinds?: string[]; limit?: number; full?: boolean; project?: string; machine?: string; chapter?: string }): Promise<{ conversation: number; id: number; kind: string; at?: string; excerpt: string }[]>',
       execute: read('search', 1),
@@ -415,7 +411,7 @@ function globals(
       name: 'doc',
       description:
         'Read an exported extension document or pi.agent, pi.inbox, pi.live or pi.usage by kind; defaults to this conversation, or to conversation 1 in another project. ' +
-        PROJECT,
+        projectOptionDescription,
       signature:
         '(kind: string, conversationId?: number, options?: { project?: string; machine?: string }): Promise<unknown>',
       execute: async (values, { signal }) => {

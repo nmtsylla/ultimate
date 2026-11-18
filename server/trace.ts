@@ -403,9 +403,8 @@ CREATE INDEX IF NOT EXISTS calls_at ON calls (at);`
         const where: { sql: string; value: string | number }[] = filters.flatMap(
           ([column, value]) => (value === undefined ? [] : [{ sql: `${column} = ?`, value }]),
         )
-        // `at` carries a fraction of a millisecond, but a row shows and is filtered by the millisecond: a bound a
-        // caller read from a row neither repeats that row (`since`) nor skips the rows underneath it (`until`).
-        if (since !== undefined) where.push({ sql: 'at >= ?', value: since + 1 })
+        const millisecondAfter = (bound: number) => bound + 1
+        if (since !== undefined) where.push({ sql: 'at >= ?', value: millisecondAfter(since) })
         if (until !== undefined) where.push({ sql: 'at < ?', value: until })
         const limit = Math.min(Math.max(1, Math.trunc(Number(query.limit) || 100)), 1000)
         return select(

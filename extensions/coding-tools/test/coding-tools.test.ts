@@ -102,6 +102,7 @@ it('names the hunk of a multi-hunk edit that did not match, and writes nothing',
     const file = join(dir, 'notes.ts')
     await writeFile(file, 'const a = 1\nconst b = 2\n')
     const wrapper = codingTools({
+      ...inertHost,
       emit: vi.fn<ExtensionHost['emit']>() as ExtensionHost['emit'],
     }).wraps!.find((wrap) => 'tool' in wrap && wrap.tool === 'edit')!
     if (!('tool' in wrapper)) throw new Error('Missing edit wrapper')

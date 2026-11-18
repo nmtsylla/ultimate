@@ -53,14 +53,12 @@ const tone: Record<McpServerStatus['state'], string> = {
   'needs-login': 'bg-warning',
 }
 
-/** The row's right-hand word: tool count, the wait for the browser, or the state. */
 function stateLabel(server: McpServerStatus) {
   if (server.state === 'connected') return plural(server.tools ?? 0, 'tool')
   if (server.state === 'needs-login') return server.loginUrl ? 'waiting' : 'needs login'
   return server.state
 }
 
-/** `14:32`, or that the token ran out; the next request refreshes it. */
 const expiry = (at: number) => (at > Date.now() ? formatTime(at) : 'expired')
 
 const smallButton =
@@ -192,7 +190,6 @@ function Row({ server, onChanged }: { server: McpServerStatus; onChanged: () => 
                 if (event.nativeEvent.isComposing) return
                 if (event.key === 'Enter') {
                   event.preventDefault()
-                  // oxlint-disable-next-line typescript/no-floating-promises -- run() reports the failure in the row.
                   if (pasted.trim()) void finish()
                 }
               }}

@@ -1,7 +1,3 @@
-/**
- * Prewalk in the browser: a quiet composer-toolbar chip while a handoff is armed (`prewalk → fast · model`), with an
- * inline cancel, and a compact family chooser (toolbar click or ⌘K "Prewalk…") that arms on selection.
- */
 import { CheckIcon, FootprintsIcon, XIcon } from 'lucide-react'
 import { useState } from 'react'
 import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover'
@@ -26,10 +22,8 @@ type Armed = NonNullable<PrewalkState['armed']>
 const toolbarButton =
   'flex h-7 max-w-56 shrink-0 items-center gap-1.5 rounded-md px-2 font-mono text-[11.5px] text-muted-foreground transition-colors hover:bg-accent hover:text-foreground data-[state=open]:bg-accent data-[state=open]:text-foreground'
 
-/** The chooser popover of conversation `id`'s toolbar; the ⌘K command opens the shown conversation's. */
 const chooseDialog = (id: number | undefined) => `prewalk.choose.${id}`
 
-/** `fast · deepseek-v4.1-flash · high`; an explicit pin shows `provider/modelId` instead of the family. */
 function targetLabel(armed: Armed) {
   const model = refName(armed.target)
   return [
@@ -40,7 +34,6 @@ function targetLabel(armed: Armed) {
 }
 
 const modelIdOf = (ref: string) => ref.slice(ref.indexOf('/') + 1)
-/** The thinking level a family runs at (as `models` shows it): its own, or Pi's default for a following family. */
 const thinkingOf = (family: FamilyView) =>
   family.thinking ?? (family.model ? undefined : family.followsThinking)
 

@@ -126,8 +126,6 @@ async function workLostWithCheckout(
   const branch = (await git(workspace.path, 'branch', '--list', workspace.branch))
     ? [workspace.branch]
     : []
-  // The target may be gone: a branch renamed or deleted after it landed. Nothing can be unlanded
-  // against a branch that does not exist, so count nothing instead of failing the whole conclude.
   const targetExists = await git(
     workspace.path,
     'rev-parse',
@@ -554,7 +552,7 @@ export function workspaces(host: Host) {
       if (signal?.aborted) break
       const record = await get(id, context)
       if (!record) continue
-      if (!(await lstat(record.source).catch(() => undefined))) continue
+      if (!(await lstat(record.source).catch(meansNone))) continue
       await serializeSourceWrites(record.source, async () => {
         if (signal?.aborted) return
         const workspace = (await get(id, context))!
