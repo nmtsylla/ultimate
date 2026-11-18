@@ -127,8 +127,9 @@ account limits, and subscription coverage is not guaranteed.
 
 ### Terminal status
 
-`pnpm start` / `ultimate` shows a compact live terminal dashboard: the public URL, supervisor/core lifecycle,
-core generation and PID, web readiness, registered extension services, and the last event. Routine
+`pnpm start` and `ultimate --foreground` show a compact live terminal dashboard: the public URL, supervisor/core lifecycle,
+core generation and PID, web readiness, registered extension services, and the last event. The plain `ultimate` command
+starts the supervisor in the background and returns; it still opens the app window. Routine
 Vite output updates the dashboard instead of scrolling; warnings and errors remain in scrollback. Redirected
 output is plain text with no dashboard escape sequences. Detailed, timestamped JSON lines (including routine
 output and diagnostics) are appended to `<state home>/supervisor.log`; this file is not automatically rotated.
@@ -140,10 +141,12 @@ Supervisor changes require a **manual stop and restart with `pnpm start`**; a co
 
 ### In your project
 
-`ultimate [dir] [--port N] [--no-open]` starts Ultimate for a project (default: the current directory) and opens it
-as its own chromeless window in a Chrome-family browser (`http://ultimate.localhost:<port>`), or a tab when there is
-none. On macOS, when that origin is installed as a Chrome app, the window opens as that app, with its own Dock and ⌘-Tab
-entry. Running it again for a running project opens another window instead. Ultimate's own source stays in the clone;
+`ultimate [dir] [--port N] [--no-open] [--foreground]` starts Ultimate in the background for a project (default: the
+current directory) and opens it as its own chromeless window in a Chrome-family browser
+(`http://ultimate.localhost:<port>`), or a tab when there is none. `ultimate list` shows the running folders with their
+local and current Tailscale URLs, and `ultimate stop [dir]` stops one (default: the current folder); `--foreground` keeps
+the dashboard in this terminal. On macOS, when that origin is installed as a Chrome app, the window opens as that app, with its own Dock and ⌘-Tab
+entry. Running it again for a running project opens another window of it. Ultimate's own source stays in the clone;
 the tools and the conversation work in your project.
 
 - **`.ultimate/` in your project** tailors it: `extensions/`, `agents/`, `skills/`, and an optional `settings.json`
