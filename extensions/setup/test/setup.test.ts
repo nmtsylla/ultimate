@@ -3,7 +3,7 @@ import { join } from 'node:path'
 import type { ConversationId, JsonObject, Tx } from '@earendil-works/pi-durable'
 import { afterEach, expect, it } from 'vitest'
 import { fallbackModel, summaryModelStatus } from '../../conversations/summary-model.ts'
-import { check, noteFor } from '../server.ts'
+import { check, noteFor, reportWorkIsolation } from '../server.ts'
 import type { SetupIssue } from '../refs.ts'
 import { git } from '../../../lib/git.ts'
 import { writeSecret } from '../../secrets/store.ts'
@@ -368,4 +368,29 @@ it('notes the primary agent only when its warnings change, and once when they cl
   expect(await content([info])).toContain('resolved')
   expect(await content([info])).toBeUndefined()
   expect(await noteFor(tx, id, undefined, 0)).toBeUndefined()
+})
+
+it('reports a work.memoryMax that is not a size in Diagnostics, and nothing once it is', async () => {
+  const projectRoot = await temp('ultimate-setup-project-')
+  const userHome = await temp('ultimate-setup-home-')
+  await mkdir(join(userHome, '.ultimate'), { recursive: true })
+  const settings = join(userHome, '.ultimate/settings.json')
+  const notices: { message: string; diagnostic?: boolean }[] = []
+  const host = {
+    projectRoot,
+    userHome,
+    notice: (message: string, options?: { diagnostic?: boolean }) =>
+      void notices.push({ message, ...options }),
+  }
+  await writeFile(settings, '{"work":{"memoryMax":"12 Q"}}')
+  await reportWorkIsolation(host)
+  expect(notices).toHaveLength(1)
+  expect(notices[0].diagnostic).toBe(true)
+  expect(notices[0].message).toMatch(
+    /^Invalid work\.memoryMax "12 Q" in the user settings: expected bytes or a cgroup size such as "12G"; branch work is capped at the default \d+ bytes, and a changed value applies at the next start$/,
+  )
+  notices.length = 0
+  await writeFile(settings, '{"work":{"memoryMax":"12G"}}')
+  await reportWorkIsolation(host)
+  expect(notices).toEqual([])
 })

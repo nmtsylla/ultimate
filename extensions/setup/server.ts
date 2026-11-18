@@ -16,6 +16,7 @@ import { existsSync } from 'node:fs'
 import { join } from 'node:path'
 import { discoverAgents } from '../../lib/agents.ts'
 import { isolatable } from '../../lib/git.ts'
+import { workIsolation } from '../../lib/cgroup.ts'
 import { implementAction } from '../../lib/actions.ts'
 import { meansNone } from '../../lib/errors.ts'
 import { readSettings, userSettingsPath } from '../../lib/settings.ts'
@@ -470,8 +471,16 @@ export async function noteFor(
   }
 }
 
+export async function reportWorkIsolation(
+  host: Pick<ExtensionHost, 'projectRoot' | 'userHome' | 'notice'>,
+) {
+  for (const problem of (await workIsolation(host.projectRoot, host.userHome)).problems)
+    host.notice(problem, { diagnostic: true })
+}
+
 export default function setup(host: ExtensionHost) {
   const cache = host.resource('setup.check', () => ({ at: 0, issues: [] as SetupIssue[] }))
+  host.onOpen(() => reportWorkIsolation(host))
   const burstCheckCacheMs = 30_000
   const current = async (tx: Tx) => {
     if (Date.now() - cache.at > burstCheckCacheMs) {
@@ -496,6 +505,7 @@ export default function setup(host: ExtensionHost) {
 }
 
 export const pollActions = ['check']
+export const reloadOnSettings = true
 
 export const actions = {
   check: implementAction(CheckAction, async (_args, { host }) => check(host)),
