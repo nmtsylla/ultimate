@@ -204,11 +204,19 @@ export async function remoteAction(args: JsonValue, { host }: ActionContext) {
   }
   if (typeof input.reply !== 'boolean') throw new Error('reply must be a boolean')
   const reply = input.reply
+  const receipts = await host
+    .harness()
+    .snapshot(UnprunedRemoteReceipts, ROOT_CONVERSATION_ID, BACKGROUND_CONTEXT)
+  const noRouteBack =
+    reply && !Object.hasOwn(receipts?.received ?? {}, key)
+      ? await noRouteBackTo(host, sender)
+      : undefined
   const to = await host.need(SubagentsApi).standing('ultimate', BACKGROUND_CONTEXT)
   const toLabel = await senderName(host, to, BACKGROUND_CONTEXT)
   return host.harness().commit(async (tx) => {
     const { received } = await tx.doc(UnprunedRemoteReceipts, ROOT_CONVERSATION_ID)
     if (Object.hasOwn(received, key)) return received[key]
+    if (noRouteBack) throw noRouteBack
     const message = await append(tx, {
       from: 'remote',
       to,
@@ -242,6 +250,47 @@ export async function remoteAction(args: JsonValue, { host }: ActionContext) {
     )
     return message.id
   }, BACKGROUND_CONTEXT)
+}
+
+async function noRouteBackTo(host: ExtensionHost, sender: { project: string; machine: string }) {
+  const why = await locate(host, sender.project, sender.machine).then(
+    (target) => ('current' in target ? `${sender.project} is this project` : undefined),
+    (error: unknown) => (error instanceof Error ? error.message : String(error)),
+  )
+  if (why === undefined) return undefined
+  const self = await selfAddress(host)
+  return new Error(
+    `${self.project} on ${self.machine} cannot answer: add ${sender.project} on ${sender.machine} to remotes in its user settings, or tell with reply: false. It has no route back (${why}).`,
+  )
+}
+
+export async function dismissTell(
+  host: ExtensionHost,
+  from: ConversationId,
+  messageId: number,
+  reason: string,
+  ctx: Context,
+) {
+  return host.harness().commit(async (tx) => {
+    const stored = (await tx.doc(Messages, ROOT_CONVERSATION_ID)).messages.find(
+      (m) => m.id === messageId && m.from === from && m.to === 'remote' && isOpen(m),
+    )
+    if (!stored) throw new Error('These questions are no longer open')
+    stored.state = 'dismissed'
+    stored.error = reason
+    const told = (await tx.doc(UnprunedRemoteReceipts, ROOT_CONVERSATION_ID)).told[
+      stored.remote!.key
+    ]
+    if (told) told.answer = stored.id
+    await dropped(
+      host,
+      tx,
+      { kind: 'tell', key: stored.remote!.key },
+      `The tell to ${remoteLabel(stored.remote!)},`,
+      `was dismissed (${reason})`,
+    )
+    return stored.id
+  }, ctx)
 }
 
 export async function remoteReplyAction(args: JsonValue, { host }: ActionContext) {
